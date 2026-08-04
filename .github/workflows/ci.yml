@@ -1,0 +1,75 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly Cognee compatibility check
+    - cron: "0 8 * * 1"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      ENABLE_BACKEND_ACCESS_CONTROL: "false"
+      COGNEE_SKIP_CONNECTION_TEST: "true"
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Unit tests
+        run: uv run python -m pytest tests/unit/ -v
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ENABLE_BACKEND_ACCESS_CONTROL: "false"
+      COGNEE_SKIP_CONNECTION_TEST: "true"
+      HF_HUB_OFFLINE: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Integration tests (mock LLM)
+        run: uv run python -m pytest tests/integration/ -v
+
+  compatibility:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ENABLE_BACKEND_ACCESS_CONTROL: "false"
+      COGNEE_SKIP_CONNECTION_TEST: "true"
+      HF_HUB_OFFLINE: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.13
+      - run: uv sync --dev
+      # Test with latest cognee 1.x
+      - run: uv pip install --upgrade "cognee>=1.4,<2.0"
+      - run: uv run python -m pytest tests/ -v

@@ -1,0 +1,61 @@
+[project]
+name = "deep-obsidian"
+version = "0.1.0"
+description = "Obsidian vault → Cognee knowledge graph. One command."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "jojo" }]
+keywords = ["obsidian", "cognee", "knowledge-graph", "markdown", "rag"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+
+dependencies = [
+  "cognee>=1.4,<2.0",
+  "click>=8.0",
+  "litellm>=1.0",
+  "pyyaml>=6.0",
+  "fastembed>=0.8",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "pytest-mock>=3.14"]
+
+[project.scripts]
+deep-obsidian = "deep_obsidian.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/deep_obsidian"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+markers = [
+  "unit: unit tests (fast, no Cognee)",
+  "integration: integration tests (needs Cognee + LLM)",
+]
+
+[tool.pyright]
+pythonVersion = "3.11"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+docstring-code-format = true
