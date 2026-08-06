@@ -21,6 +21,7 @@ from deep_obsidian.extractors.tags import parse as parse_tags
 from deep_obsidian.extractors.wikilinks import parse as parse_wikilinks
 from deep_obsidian.ingest._fingerprint import file_hash, load_hashes, save_hashes
 from deep_obsidian.ingest._health import clear_ladybug_lock
+from deep_obsidian.ingest._progress_state import acquire as _acquire_progress
 from deep_obsidian.ingest._scanner import scan_vault
 from deep_obsidian.settings import find_project_root, read_settings
 
@@ -201,97 +202,118 @@ async def ingest(
     # a fixed, machine/venv-wide location shared by every dataset ever
     # processed there (defeating per-vault isolation — see AGENTS.md
     # "④ 数据跟 Vault 走").
-    clear_ladybug_lock(str(project_root))
-    os.environ.setdefault("TELEMETRY_DISABLED", "1")
-    cognee.config.data_root_directory(str(project_root / ".cognee"))
-    cognee.config.system_root_directory(str(project_root / ".cognee"))
+    #
+    # The progress/lock handle wraps all of this: it's the cross-process
+    # observability + single-instance lock for this run (SPEC-003 /
+    # ADR-0009). Acquired only here, past the "nothing to do" early
+    # returns above, so a no-op ingest (all unchanged) never touches the
+    # lock file. ``acquire()`` raises IngestAlreadyRunningError if
+    # another live ingest already holds it for this project — callers
+    # (CLI, service) are responsible for presenting that error usefully.
+    with _acquire_progress(project_root, dataset_name, total) as handle:
+        clear_ladybug_lock(str(project_root))
+        os.environ.setdefault("TELEMETRY_DISABLED", "1")
+        cognee.config.data_root_directory(str(project_root / ".cognee"))
+        cognee.config.system_root_directory(str(project_root / ".cognee"))
 
-    # Process deleted files (requires Cognee)
-    for rel in deleted_rels:
-        entry = stored_hashes.get(rel, {})
-        data_id = entry.get("data_id")
-        if data_id:
+        # Process deleted files (requires Cognee)
+        for rel in deleted_rels:
+            entry = stored_hashes.get(rel, {})
+            data_id = entry.get("data_id")
+            if data_id:
+                try:
+                    await _forget_one(data_id, dataset_name)
+                except Exception as e:
+                    all_warnings.append(f"Failed to forget deleted file {rel}: {e}")
+
+        # ── Phase 1: Add / update files ──
+        dataset_id_for_updates: str | None = None
+        pending_cognify = False
+
+        for i, (filepath, rel, action) in enumerate(to_process):
+            pre_data_id: str | None = None
             try:
-                await _forget_one(data_id, dataset_name)
-            except Exception as e:
-                all_warnings.append(f"Failed to forget deleted file {rel}: {e}")
-
-    # ── Phase 1: Add / update files ──
-    dataset_id_for_updates: str | None = None
-    pending_cognify = False
-
-    for i, (filepath, rel, action) in enumerate(to_process):
-        pre_data_id: str | None = None
-        try:
-            if action == "add":
-                # Generate data_id before calling add so it survives
-                # _LLMDegradedWarning — structural data is preserved.
-                pre_data_id = str(_uuid.uuid4())
-                ds_id = await _add_one(filepath, dataset_name, data_id=pre_data_id)
-                if ds_id and dataset_id_for_updates is None:
-                    dataset_id_for_updates = ds_id
-                new_hashes[rel] = {"hash": file_hash(str(filepath)), "data_id": pre_data_id}
-                added_count += 1
-                pending_cognify = True
-                save_hashes(str(hashes_path), new_hashes)
-                if on_progress:
-                    on_progress(i + 1, total, f"{rel} (added)")
-            elif action == "update":
-                stored_data_id: str | None = stored_hashes.get(rel, {}).get("data_id")
-                if stored_data_id:
-                    # Resolve dataset UUID lazily
-                    if dataset_id_for_updates is None:
-                        dataset_id_for_updates = await _resolve_dataset_id(dataset_name)
-                    await _update_one(filepath, stored_data_id, dataset_id_for_updates)
-                    new_hashes[rel] = {"hash": file_hash(str(filepath)), "data_id": stored_data_id}
-                    modified_count += 1
-                    save_hashes(str(hashes_path), new_hashes)
-                    if on_progress:
-                        on_progress(i + 1, total, f"{rel} (modified)")
-                else:
-                    # No data_id — treat as add (old format upgrade path)
+                if action == "add":
+                    # Generate data_id before calling add so it survives
+                    # _LLMDegradedWarning — structural data is preserved.
                     pre_data_id = str(_uuid.uuid4())
-                    await _add_one(filepath, dataset_name, data_id=pre_data_id)
+                    ds_id = await _add_one(filepath, dataset_name, data_id=pre_data_id)
+                    if ds_id and dataset_id_for_updates is None:
+                        dataset_id_for_updates = ds_id
                     new_hashes[rel] = {"hash": file_hash(str(filepath)), "data_id": pre_data_id}
                     added_count += 1
                     pending_cognify = True
                     save_hashes(str(hashes_path), new_hashes)
+                    handle.update(phase="adding", current=i + 1, total=total, current_file=rel)
                     if on_progress:
-                        on_progress(i + 1, total, f"{rel} (added, no data_id)")
-        except _LLMDegradedWarning as e:
-            all_warnings.append(str(e))
-            if action == "update":
-                modified_count += 1
-                sid = stored_hashes.get(rel, {}).get("data_id")
-                entry: dict = {"hash": file_hash(str(filepath))}
-                if sid:
-                    entry["data_id"] = sid
-                new_hashes[rel] = entry
-            else:
-                # add — structural data preserved; data_id was generated before the call
-                added_count += 1
-                pending_cognify = True
-                new_hashes[rel] = {"hash": file_hash(str(filepath)), "data_id": pre_data_id}
-            save_hashes(str(hashes_path), new_hashes)
-        except Exception as e:
-            failed_count += 1
-            if on_progress:
-                on_progress(i + 1, total, f"{rel} FAILED: {e}")
+                        on_progress(i + 1, total, f"{rel} (added)")
+                elif action == "update":
+                    stored_data_id: str | None = stored_hashes.get(rel, {}).get("data_id")
+                    if stored_data_id:
+                        # Resolve dataset UUID lazily
+                        if dataset_id_for_updates is None:
+                            dataset_id_for_updates = await _resolve_dataset_id(dataset_name)
+                        await _update_one(filepath, stored_data_id, dataset_id_for_updates)
+                        new_hashes[rel] = {
+                            "hash": file_hash(str(filepath)),
+                            "data_id": stored_data_id,
+                        }
+                        modified_count += 1
+                        save_hashes(str(hashes_path), new_hashes)
+                        handle.update(phase="adding", current=i + 1, total=total, current_file=rel)
+                        if on_progress:
+                            on_progress(i + 1, total, f"{rel} (modified)")
+                    else:
+                        # No data_id — treat as add (old format upgrade path)
+                        pre_data_id = str(_uuid.uuid4())
+                        await _add_one(filepath, dataset_name, data_id=pre_data_id)
+                        new_hashes[rel] = {"hash": file_hash(str(filepath)), "data_id": pre_data_id}
+                        added_count += 1
+                        pending_cognify = True
+                        save_hashes(str(hashes_path), new_hashes)
+                        handle.update(phase="adding", current=i + 1, total=total, current_file=rel)
+                        if on_progress:
+                            on_progress(i + 1, total, f"{rel} (added, no data_id)")
+            except _LLMDegradedWarning as e:
+                all_warnings.append(str(e))
+                if action == "update":
+                    modified_count += 1
+                    sid = stored_hashes.get(rel, {}).get("data_id")
+                    entry: dict = {"hash": file_hash(str(filepath))}
+                    if sid:
+                        entry["data_id"] = sid
+                    new_hashes[rel] = entry
+                else:
+                    # add — structural data preserved; data_id was generated before the call
+                    added_count += 1
+                    pending_cognify = True
+                    new_hashes[rel] = {"hash": file_hash(str(filepath)), "data_id": pre_data_id}
+                save_hashes(str(hashes_path), new_hashes)
+                handle.update(phase="adding", current=i + 1, total=total, current_file=rel)
+            except Exception as e:
+                failed_count += 1
+                handle.update(phase="adding", current=i + 1, total=total, current_file=rel)
+                if on_progress:
+                    on_progress(i + 1, total, f"{rel} FAILED: {e}")
 
-    # Final save is a no-op if the loop already persisted every entry,
-    # but keeps behavior correct if to_process was empty (deleted-only run).
-    save_hashes(str(hashes_path), new_hashes)
+        # Final save is a no-op if the loop already persisted every entry,
+        # but keeps behavior correct if to_process was empty (deleted-only run).
+        save_hashes(str(hashes_path), new_hashes)
 
-    # ── Phase 2: Batch cognify ──
-    if pending_cognify:
-        if on_cognify_start:
-            on_cognify_start()
-        try:
-            await cognee.cognify(datasets=[dataset_name])
-        except cognee.exceptions.CogneeTransientError as e:
-            all_warnings.append(f"LLM unavailable during cognify: {e!s}")
-        except Exception as e:
-            all_warnings.append(f"Cognify failed: {e!s}")
+        # ── Phase 2: Batch cognify ──
+        if pending_cognify:
+            # cognee.cognify() is an opaque batch call with no per-item
+            # progress hook (ADR-0009) — the lock can only report that
+            # this phase has started, not a percentage.
+            handle.update(phase="cognify", current=total, total=total, current_file="")
+            if on_cognify_start:
+                on_cognify_start()
+            try:
+                await cognee.cognify(datasets=[dataset_name])
+            except cognee.exceptions.CogneeTransientError as e:
+                all_warnings.append(f"LLM unavailable during cognify: {e!s}")
+            except Exception as e:
+                all_warnings.append(f"Cognify failed: {e!s}")
 
     return {
         "total": total + deleted_count,

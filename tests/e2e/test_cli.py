@@ -336,3 +336,245 @@ class TestIngestTTYProgressCard:
         with pytest.raises(SystemExit) as exc_info:
             ingest_callback(target=str(tmp_path), full=False, json_output=False)
         assert exc_info.value.code == 130
+
+
+class TestStatus:
+    """Top-level ``deep-obsidian status`` — distinct from ``service status``
+    (SPEC-003 / ADR-0009). One-shot snapshot, no --watch.
+    """
+
+    def test_idle_json(self, tmp_path: Path, runner: CliRunner) -> None:
+        from deep_obsidian.settings import init_project
+
+        init_project(tmp_path, name="status-idle")
+
+        import os as _os
+
+        _cwd = _os.getcwd()
+        try:
+            _os.chdir(tmp_path)
+            result = runner.invoke(main, ["status", "--json"])
+        finally:
+            _os.chdir(_cwd)
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["status"] == "idle"
+
+    def test_idle_human_readable(self, tmp_path: Path, runner: CliRunner) -> None:
+        from deep_obsidian.settings import init_project
+
+        init_project(tmp_path, name="status-idle-human")
+
+        import os as _os
+
+        _cwd = _os.getcwd()
+        try:
+            _os.chdir(tmp_path)
+            result = runner.invoke(main, ["status"])
+        finally:
+            _os.chdir(_cwd)
+
+        assert result.exit_code == 0
+        assert "no ingest" in result.output.lower()
+
+    def test_running_json(self, tmp_path: Path, runner: CliRunner) -> None:
+        from deep_obsidian.ingest._progress_state import acquire
+        from deep_obsidian.settings import init_project
+
+        init_project(tmp_path, name="status-running")
+
+        import os as _os
+
+        _cwd = _os.getcwd()
+        try:
+            _os.chdir(tmp_path)
+            with acquire(tmp_path, dataset="status-running", total=5) as handle:
+                handle.update(phase="adding", current=2, total=5, current_file="b.md")
+                result = runner.invoke(main, ["status", "--json"])
+        finally:
+            _os.chdir(_cwd)
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["status"] == "running"
+        assert data["phase"] == "adding"
+        assert data["current"] == 2
+        assert data["total"] == 5
+        assert data["current_file"] == "b.md"
+
+    def test_running_human_readable(self, tmp_path: Path, runner: CliRunner) -> None:
+        from deep_obsidian.ingest._progress_state import acquire
+        from deep_obsidian.settings import init_project
+
+        init_project(tmp_path, name="status-running-human")
+
+        import os as _os
+
+        _cwd = _os.getcwd()
+        try:
+            _os.chdir(tmp_path)
+            with acquire(tmp_path, dataset="status-running-human", total=5) as handle:
+                handle.update(phase="adding", current=2, total=5, current_file="b.md")
+                result = runner.invoke(main, ["status"])
+        finally:
+            _os.chdir(_cwd)
+
+        assert result.exit_code == 0
+        assert "adding" in result.output.lower()
+        assert "2/5" in result.output
+        assert "b.md" in result.output
+
+    def test_stale_json(self, tmp_path: Path, runner: CliRunner) -> None:
+        import subprocess
+
+        from deep_obsidian.settings import init_project
+
+        init_project(tmp_path, name="status-stale")
+
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+
+        progress_path = tmp_path / ".deep-obsidian" / "progress.json"
+        progress_path.write_text(
+            json.dumps(
+                {
+                    "pid": dead.pid,
+                    "dataset": "status-stale",
+                    "phase": "cognify",
+                    "current": 3,
+                    "total": 3,
+                    "current_file": "",
+                    "started_at": 0,
+                }
+            )
+        )
+
+        import os as _os
+
+        _cwd = _os.getcwd()
+        try:
+            _os.chdir(tmp_path)
+            result = runner.invoke(main, ["status", "--json"])
+        finally:
+            _os.chdir(_cwd)
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["status"] == "stale"
+        assert data["phase"] == "cognify"
+
+    def test_stale_human_readable_mentions_crash(self, tmp_path: Path, runner: CliRunner) -> None:
+        import subprocess
+
+        from deep_obsidian.settings import init_project
+
+        init_project(tmp_path, name="status-stale-human")
+
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+
+        progress_path = tmp_path / ".deep-obsidian" / "progress.json"
+        progress_path.write_text(
+            json.dumps(
+                {
+                    "pid": dead.pid,
+                    "dataset": "status-stale-human",
+                    "phase": "adding",
+                    "current": 1,
+                    "total": 4,
+                    "current_file": "a.md",
+                    "started_at": 0,
+                }
+            )
+        )
+
+        import os as _os
+
+        _cwd = _os.getcwd()
+        try:
+            _os.chdir(tmp_path)
+            result = runner.invoke(main, ["status"])
+        finally:
+            _os.chdir(_cwd)
+
+        assert result.exit_code == 0
+        assert "1/4" in result.output
+
+    def test_without_init(self, tmp_path: Path, runner: CliRunner) -> None:
+        import os as _os
+
+        _cwd = _os.getcwd()
+        try:
+            _os.chdir(tmp_path)
+            result = runner.invoke(main, ["status"])
+        finally:
+            _os.chdir(_cwd)
+
+        assert result.exit_code != 0
+        assert "init" in result.output.lower()
+
+
+class TestIngestLockContention:
+    """``deep-obsidian ingest`` when another live ingest already holds
+    the project's lock (SPEC-003 / ADR-0009, ticket 03) — a friendly
+    error, not a raw traceback.
+    """
+
+    def test_ingest_reports_friendly_error_when_locked(
+        self, tmp_path: Path, runner: CliRunner
+    ) -> None:
+        from deep_obsidian.ingest._progress_state import acquire
+        from deep_obsidian.settings import init_project
+
+        (tmp_path / "a.md").write_text("# A")
+        init_project(tmp_path, name="lock-contention")
+
+        with acquire(tmp_path, dataset="lock-contention", total=1) as handle:
+            handle.update(phase="cognify", current=1, total=1, current_file="")
+            result = runner.invoke(main, ["ingest", str(tmp_path)])
+
+            assert result.exit_code != 0
+            assert "Traceback" not in result.output
+            out = result.output.lower()
+            assert "lock-contention" in out
+            assert "cognify" in out
+
+    def test_ingest_error_includes_how_long_lock_holder_has_been_running(
+        self, tmp_path: Path, runner: CliRunner
+    ) -> None:
+        import time as _time
+
+        from deep_obsidian.ingest._progress_state import acquire
+        from deep_obsidian.settings import init_project
+
+        (tmp_path / "a.md").write_text("# A")
+        init_project(tmp_path, name="lock-elapsed")
+
+        with acquire(tmp_path, dataset="lock-elapsed", total=1) as handle:
+            handle.update(phase="cognify", current=1, total=1, current_file="")
+            # Backdate started_at so the friendly message has a
+            # non-trivial elapsed duration to report.
+            handle._state["started_at"] = _time.time() - 125
+            handle.update(phase="cognify", current=1, total=1, current_file="")
+            result = runner.invoke(main, ["ingest", str(tmp_path)])
+
+            assert result.exit_code != 0
+            assert "02:05" in result.output
+
+    def test_ingest_json_mode_also_friendly_on_lock_contention(
+        self, tmp_path: Path, runner: CliRunner
+    ) -> None:
+        from deep_obsidian.ingest._progress_state import acquire
+        from deep_obsidian.settings import init_project
+
+        (tmp_path / "a.md").write_text("# A")
+        init_project(tmp_path, name="lock-contention-json")
+
+        with acquire(tmp_path, dataset="lock-contention-json", total=1) as handle:
+            handle.update(phase="adding", current=1, total=1, current_file="a.md")
+            result = runner.invoke(main, ["ingest", str(tmp_path), "--json"])
+
+            assert result.exit_code != 0
+            assert "Traceback" not in result.output
+            assert "lock-contention-json" in result.output

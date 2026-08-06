@@ -12,6 +12,7 @@ import contextlib
 import json
 import os as _os
 import sys as _sys
+import time as _time
 from pathlib import Path
 
 # ── Suppress Cognee's noisy import-time logging ──
@@ -48,6 +49,23 @@ def _quiet_stdout_when_json(json_output: bool):
         return
     with contextlib.redirect_stdout(_sys.stderr):
         yield
+
+
+def _describe_lock_conflict(e) -> str:
+    """Render an ``IngestAlreadyRunningError`` as a friendly one-liner
+    including how long the lock holder has been running.
+    """
+    state = e.state
+    elapsed = ""
+    started_at = state.get("started_at")
+    if isinstance(started_at, (int, float)):
+        from deep_obsidian.ingest._progress import _format_time
+
+        elapsed = f", running for {_format_time(_time.time() - started_at)}"
+    return (
+        f"Another ingest is already running for dataset '{state.get('dataset')}' "
+        f"(PID {state.get('pid')}, phase: {state.get('phase')}{elapsed})."
+    )
 
 
 @click.group()
@@ -113,6 +131,7 @@ def ingest(target: str, full: bool, json_output: bool) -> None:
 
     from deep_obsidian.ingest import ingest as do_ingest
     from deep_obsidian.ingest._progress import ProgressCard
+    from deep_obsidian.ingest._progress_state import IngestAlreadyRunningError
     from deep_obsidian.ingest._scanner import scan_vault
     from deep_obsidian.settings import find_project_root, read_settings
 
@@ -156,6 +175,9 @@ def ingest(target: str, full: bool, json_output: bool) -> None:
                     err=True,
                 )
                 _sys.exit(130)
+            except IngestAlreadyRunningError as e:
+                click.echo(f"Error: {_describe_lock_conflict(e)}", err=True)
+                _sys.exit(1)
             except Exception as e:
                 click.echo(f"Error: {e}", err=True)
                 _sys.exit(1)
@@ -184,6 +206,9 @@ def ingest(target: str, full: bool, json_output: bool) -> None:
                 err=True,
             )
             _sys.exit(130)
+        except IngestAlreadyRunningError as e:
+            click.echo(f"Error: {_describe_lock_conflict(e)}", err=True)
+            _sys.exit(1)
         except Exception as e:
             click.echo(f"Error: {e}", err=True)
             _sys.exit(1)
@@ -413,6 +438,59 @@ def forget(
         click.echo(f"Forgotten {result['forgotten']} file(s) from '{result['dataset']}'.")
         for w in result.get("warnings", []):
             click.echo(f"  ⚠️  {w}")
+
+
+@main.command(name="status")
+@click.option("--json", "json_output", is_flag=True, help="Machine-readable output")
+def status_cmd(json_output: bool) -> None:
+    """Show whether an ingest is currently running for this project.
+
+    One-shot snapshot of the current ingest run state (idle / running /
+    stale) — not to be confused with 'service status', which reports
+    whether the background file-watching daemon is alive.
+    """
+    from deep_obsidian.ingest._progress import _format_time
+    from deep_obsidian.status import status as do_status
+
+    async def _run():
+        return await do_status()
+
+    try:
+        result = asyncio.run(_run())
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
+        _sys.exit(1)
+
+    if json_output:
+        click.echo(json.dumps(result, ensure_ascii=False, default=str))
+        return
+
+    st = result["status"]
+    if st == "idle":
+        click.echo("No ingest is currently running.")
+        return
+
+    dataset = result.get("dataset")
+    phase = result.get("phase")
+    current = result.get("current")
+    total = result.get("total")
+    current_file = result.get("current_file")
+    started_at = result.get("started_at")
+
+    elapsed = ""
+    if isinstance(started_at, (int, float)):
+        elapsed = f" · elapsed: {_format_time(_time.time() - started_at)}"
+
+    if st == "running":
+        parts = [f"Ingesting '{dataset}' — phase: {phase}", f"{current}/{total}"]
+        if current_file:
+            parts.append(current_file)
+        click.echo(" · ".join(parts) + elapsed)
+    else:  # stale
+        click.echo(
+            f"⚠️  Last ingest for '{dataset}' appears to have crashed "
+            f"at {phase} ({current}/{total}). Re-run 'deep-obsidian ingest' to continue."
+        )
 
 
 @main.group()

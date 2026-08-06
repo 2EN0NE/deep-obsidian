@@ -361,6 +361,14 @@ export async function search(query: string, vaultDir: string) {
 
 原因：前一次 Cognee 进程异常退出，留下 Ladybug 图数据库锁。
 
+**如果 `deep-obsidian service` 正在运行**：这个报错也可能来自 service 正在
+后台写入图数据库（合法的活跃锁，不是残留死锁）——Ladybug 不支持并发读写，
+service 常驻同步期间偶尔 `search`/`query` 撞上写入窗口会报这个错。直接重试
+即可，不需要清理锁文件（清理一个活跃锁会破坏 service 正在进行的写入）。
+详见 [ADR-0008](adr/0008-service-search-lock-contention.md)。
+
+如果 service 没有运行、或重试仍持续失败：
+
 解决：适配层在每次 `ingest` 启动时自动清理残留锁。如果仍有问题：
 
 ```bash

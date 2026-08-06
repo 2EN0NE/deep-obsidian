@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from deep_obsidian.ingest import ingest
+from deep_obsidian.ingest._progress_state import IngestAlreadyRunningError
 from deep_obsidian.service._pidfile import (
     is_process_alive,
     pidfile_path,
@@ -68,13 +69,20 @@ async def run_service(project_root: Path) -> None:
 
     try:
         # Initial full scan on startup
-        result = await ingest(str(vault), dataset=dataset_name)
-        _log("info", f"Initial scan: {_format_stats(result)}")
+        try:
+            result = await ingest(str(vault), dataset=dataset_name)
+            _log("info", f"Initial scan: {_format_stats(result)}")
+        except IngestAlreadyRunningError as e:
+            _log("warning", f"Skipping initial scan — {e}")
 
         # File event → ingest handler
         async def _on_file_event(rel: str, event_type: str) -> None:
             async with ingest_lock:
-                result = await ingest(str(vault), dataset=dataset_name)
+                try:
+                    result = await ingest(str(vault), dataset=dataset_name)
+                except IngestAlreadyRunningError as e:
+                    _log("warning", f"Skipping ingest for {event_type} {rel} — {e}")
+                    return
             total = result.get("added", 0) + result.get("modified", 0) + result.get("deleted", 0)
             if total > 0:
                 _log("info", f"{event_type} {rel}: {_format_stats(result)}")

@@ -25,6 +25,48 @@ _MATCH_LABEL = {
     SearchType.CHUNKS_LEXICAL: "lexical",
 }
 
+# ── Ladybug lock retry for ADR-0008 ──
+# Cognee's underlying kuzu graph engine does not support concurrent read +
+# write — a long-running cognify (e.g. from the background service) can cause
+# recall() to throw an IO/lock error.  We retry with exponential backoff and
+# surface a friendly message on final failure rather than a raw traceback.
+
+_LOCK_KEYWORDS = ("lock", "io exception")
+_MAX_RECALL_RETRIES = 3
+_RECALL_RETRY_BASE_SECONDS = 1.0
+
+
+async def _recall_with_retry(
+    query_text: str,
+    datasets: list[str] | None,
+    top_k: int,
+    query_type,
+):
+    """Call ``cognee.recall()`` with exponential backoff on Ladybug lock
+    conflicts.  Non-lock errors propagate immediately so config/auth
+    issues are not masked by retry delays.
+    """
+    for attempt in range(_MAX_RECALL_RETRIES):
+        try:
+            return await cognee.recall(
+                query_text=query_text,
+                datasets=datasets,
+                top_k=top_k,
+                query_type=query_type,
+                auto_route=False,
+            )
+        except Exception as e:
+            msg = str(e).lower()
+            if not any(kw in msg for kw in _LOCK_KEYWORDS):
+                raise
+            if attempt == _MAX_RECALL_RETRIES - 1:
+                raise RuntimeError(
+                    "Search failed after retries: the knowledge graph "
+                    "is currently being written to (likely by a "
+                    "background sync). Please retry in a moment."
+                ) from e
+            await asyncio.sleep(_RECALL_RETRY_BASE_SECONDS * (2**attempt))
+
 
 def _has_cjk(s: str) -> bool:
     r"""Return True if *s* contains any CJK ideograph.
@@ -209,12 +251,11 @@ async def search(
 
     result_sets = await asyncio.gather(
         *(
-            cognee.recall(
+            _recall_with_retry(
                 query_text=query,
                 datasets=datasets,
                 top_k=top_k,
                 query_type=search_type,
-                auto_route=False,
             )
             for search_type in _NON_LLM_SEARCH_TYPES
         )
