@@ -31,9 +31,7 @@ async def inspect():
         text = getattr(r, "text", "") or str(r)
         # 清理内部标记
         clean = (
-            text.replace("__node_content_start__", "")
-            .replace("__node_content_end__", "")
-            .strip()
+            text.replace("__node_content_start__", "").replace("__node_content_end__", "").strip()
         )
         chunks.append(clean[:800])
         print(f"\n  📄 片段 {i + 1}:")

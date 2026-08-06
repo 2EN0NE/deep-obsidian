@@ -48,6 +48,9 @@ obsidian-test/
 # Pi agent
 .pi/
 
+# Design scratch space
+.scratch/
+
 # Claude / AI agent metadata
 .claude/
 .claudian/

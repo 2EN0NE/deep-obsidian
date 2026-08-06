@@ -8,9 +8,9 @@ class TestSearchRequiresInit:
 
     def test_search_without_init_raises(self, tmp_path):
         """未 init 的目录执行 search 应报错"""
-        from deep_obsidian.search import search
-
         import asyncio
+
+        from deep_obsidian.search import search
 
         with pytest.raises(RuntimeError, match="init"):
             asyncio.run(search("test query", vault_path=str(tmp_path)))

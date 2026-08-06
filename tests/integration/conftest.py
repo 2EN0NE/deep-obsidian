@@ -1,27 +1,14 @@
-"""Integration test fixtures — realistic Obsidian vaults and LLM mock."""
+"""Integration test fixtures — realistic Obsidian vaults.
+
+The ``mock_llm`` and ``mock_llm_degraded`` fixtures are defined in
+the root ``tests/conftest.py`` and auto-discovered by pytest.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
-
-# ── LLM Mock (cognify level) ──
-
-
-@pytest.fixture
-def mock_llm():
-    """Replace cognify with a no-LLM stub that returns pre-built graph results."""
-
-    async def _fake(**kwargs):
-        return {"test_dataset": type("RunInfo", (), {"status": "completed"})()}
-
-    # cognify is imported lazily inside remember() via `from ...cognify import cognify`
-    # We must patch the source attribute on the cognify package.
-    with patch("cognee.api.v1.cognify.cognify", new=_fake):
-        yield
-
 
 # ── Vault fixtures ──
 

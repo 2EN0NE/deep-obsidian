@@ -6,12 +6,38 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    # Weekly Cognee compatibility check
     - cron: "0 8 * * 1"
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: ruff check
+        run: uv run ruff check .
+
+      - name: ruff format --check
+        run: uv run ruff format --check .
+
+      - name: extractors/ Cognee-isolation guard (AGENTS.md 核心红线③)
+        run: ./scripts/check_extractors_isolation.sh
+
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: lint
     env:
       ENABLE_BACKEND_ACCESS_CONTROL: "false"
       COGNEE_SKIP_CONNECTION_TEST: "true"
@@ -32,11 +58,21 @@ jobs:
         run: uv sync --dev
 
       - name: Unit tests
-        run: uv run python -m pytest tests/unit/ -v
+        run: >-
+          uv run python -m pytest tests/unit/ -v
+          --junitxml=test-results-unit.xml
+
+      - name: Upload unit test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-unit-py${{ matrix.python-version }}
+          path: test-results-unit.xml
 
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: lint
     env:
       ENABLE_BACKEND_ACCESS_CONTROL: "false"
       COGNEE_SKIP_CONNECTION_TEST: "true"
@@ -53,8 +89,61 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
-      - name: Integration tests (mock LLM)
-        run: uv run python -m pytest tests/integration/ -v
+      - name: Show key env vars
+        run: |
+          echo "ENABLE_BACKEND_ACCESS_CONTROL=$ENABLE_BACKEND_ACCESS_CONTROL"
+          echo "COGNEE_SKIP_CONNECTION_TEST=$COGNEE_SKIP_CONNECTION_TEST"
+          echo "HF_HUB_OFFLINE=$HF_HUB_OFFLINE"
+
+      - name: Integration tests
+        run: >-
+          uv run python -m pytest tests/integration/ -v
+          --junitxml=test-results-integration.xml
+
+      - name: Upload integration test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-integration
+          path: test-results-integration.xml
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: lint
+    env:
+      ENABLE_BACKEND_ACCESS_CONTROL: "false"
+      COGNEE_SKIP_CONNECTION_TEST: "true"
+      HF_HUB_OFFLINE: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Show key env vars
+        run: |
+          echo "ENABLE_BACKEND_ACCESS_CONTROL=$ENABLE_BACKEND_ACCESS_CONTROL"
+          echo "COGNEE_SKIP_CONNECTION_TEST=$COGNEE_SKIP_CONNECTION_TEST"
+          echo "HF_HUB_OFFLINE=$HF_HUB_OFFLINE"
+
+      - name: E2E tests
+        run: >-
+          uv run python -m pytest tests/e2e/ -v
+          --junitxml=test-results-e2e.xml
+
+      - name: Upload E2E test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-e2e
+          path: test-results-e2e.xml
 
   compatibility:
     if: github.event_name == 'schedule'
@@ -70,6 +159,14 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv python install 3.13
       - run: uv sync --dev
-      # Test with latest cognee 1.x
       - run: uv pip install --upgrade "cognee>=1.4,<2.0"
-      - run: uv run python -m pytest tests/ -v
+      - run: >-
+          uv run python -m pytest tests/ -v
+          --junitxml=test-results-compat.xml
+
+      - name: Upload compatibility test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-compatibility
+          path: test-results-compat.xml

@@ -22,10 +22,11 @@ dependencies = [
   "litellm>=1.0",
   "pyyaml>=6.0",
   "fastembed>=0.8",
+  "watchfiles>=1.0",
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "pytest-mock>=3.14"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "pytest-mock>=3.14", "ruff>=0.13"]
 
 [project.scripts]
 deep-obsidian = "deep_obsidian.cli:main"

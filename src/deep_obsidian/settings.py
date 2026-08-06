@@ -15,6 +15,10 @@ CLI_VERSION = "0.1.0"
 def find_project_root(path: str | Path) -> Path | None:
     """Walk up from path to find a directory containing .deep-obsidian/.
 
+    A .deep-obsidian/ directory alone is not enough — Cognee may create
+    one as a log fallback in e.g. $HOME/.deep-obsidian/.  The directory
+    must also contain settings.json, which is created by ``init``.
+
     Returns the project root, or None if no project is found.
     """
     current = Path(path).resolve()
@@ -22,7 +26,8 @@ def find_project_root(path: str | Path) -> Path | None:
         return None
 
     for parent in [current, *current.parents]:
-        if (parent / SETTINGS_DIR).is_dir():
+        settings_dir = parent / SETTINGS_DIR
+        if settings_dir.is_dir() and (settings_dir / SETTINGS_FILE).is_file():
             return parent
     return None
 
@@ -47,16 +52,36 @@ def write_settings(project_root: str | Path, data: dict) -> None:
     )
 
 
-def init_project(path: str | Path, name: str | None = None) -> dict:
+def init_project(path: str | Path, name: str | None = None, *, force: bool = False) -> dict:
     """Initialize a new project at path.
 
     Creates .deep-obsidian/settings.json with default values.
-    If settings already exist, returns them without overwriting.
-    """
-    root = Path(path).resolve()
-    settings_path = root / SETTINGS_DIR / SETTINGS_FILE
+    If settings already exist, returns them without overwriting
+    unless ``force=True``.
 
-    if settings_path.is_file():
+    When ``force=True``, removes EVERYTHING that could carry stale
+    state from a previous run — .deep-obsidian/, .cognee/, and even
+    Cognee's log-fallback directory in $HOME — before re-creating
+    the project from scratch.  This is the "factory reset" path.
+    """
+    import shutil
+
+    root = Path(path).resolve()
+    settings_dir = root / SETTINGS_DIR
+    settings_path = settings_dir / SETTINGS_FILE
+
+    if force:
+        for _dir, _label in [
+            (settings_dir, "vault .deep-obsidian/"),
+            (root / ".cognee", "vault .cognee/"),
+            (Path.home() / SETTINGS_DIR, "$HOME/.deep-obsidian/"),
+        ]:
+            try:
+                if _dir.exists():
+                    shutil.rmtree(_dir)
+            except OSError:
+                pass  # locked / permissions — continue, not fatal
+    elif settings_path.is_file():
         return json.loads(settings_path.read_text(encoding="utf-8"))
 
     now = datetime.now(UTC).isoformat()

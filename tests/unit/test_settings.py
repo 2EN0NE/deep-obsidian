@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+
 from deep_obsidian.settings import find_project_root, init_project, read_settings, write_settings
 
 
@@ -15,6 +16,7 @@ class TestFindProjectRoot:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td).resolve()
             (root / ".deep-obsidian").mkdir()
+            (root / ".deep-obsidian" / "settings.json").write_text("{}")
             (root / "sub").mkdir()
             assert find_project_root(root / "sub") == root
 
@@ -22,6 +24,7 @@ class TestFindProjectRoot:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td).resolve()
             (root / ".deep-obsidian").mkdir()
+            (root / ".deep-obsidian" / "settings.json").write_text("{}")
             deep = root / "a" / "b" / "c"
             deep.mkdir(parents=True)
             assert find_project_root(deep) == root
@@ -83,7 +86,7 @@ class TestInitProject:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             first = init_project(root, name="first")
-            second = init_project(root, name="second")
+            init_project(root, name="second")
             data = json.loads((root / ".deep-obsidian" / "settings.json").read_text())
             # 不覆盖已有项目
             assert data["deep-obsidian-id"] == first["deep-obsidian-id"]

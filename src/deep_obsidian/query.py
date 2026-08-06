@@ -17,13 +17,19 @@ from deep_obsidian.settings import find_project_root, read_settings
 _CogneeTransient: type[Exception] | None = getattr(cognee.exceptions, "CogneeTransientError", None)
 
 
-def _read_llm_config(settings: dict) -> tuple[str, str | None, str | None]:
-    """Extract LLM model, provider, and endpoint from settings.
+def _read_llm_config(settings: dict) -> tuple[str, str | None, str | None, str | None]:
+    """Extract LLM model, provider, endpoint, and api_key from settings.
+
+    Environment variables (LLM_MODEL, LLM_PROVIDER, LLM_ENDPOINT,
+    LLM_API_KEY) take precedence over settings.json values, matching
+    Cognee's own resolution order.
 
     Returns:
-        (model, provider, endpoint) — provider and endpoint may be None
-        if not configured.
+        (model, provider, endpoint, api_key) — provider, endpoint, and
+        api_key may be None if not configured.
     """
+    import os as _os
+
     backend = settings.get("backend", {})
     if backend.get("type") != "cognee":
         raise RuntimeError(
@@ -31,10 +37,13 @@ def _read_llm_config(settings: dict) -> tuple[str, str | None, str | None]:
             f"Only 'cognee' is currently supported."
         )
     cognee_cfg = backend.get("cognee", {})
-    model = cognee_cfg.get("llm_model", "deepseek-chat")
-    provider = cognee_cfg.get("llm_provider") or None
-    endpoint = cognee_cfg.get("llm_endpoint") or None
-    return model, provider, endpoint
+
+    # Env vars take precedence (same order Cognee uses via dotenv/pydantic-settings)
+    model = _os.environ.get("LLM_MODEL") or cognee_cfg.get("llm_model", "deepseek-chat")
+    provider = _os.environ.get("LLM_PROVIDER") or cognee_cfg.get("llm_provider") or None
+    endpoint = _os.environ.get("LLM_ENDPOINT") or cognee_cfg.get("llm_endpoint") or None
+    api_key = _os.environ.get("LLM_API_KEY") or cognee_cfg.get("llm_api_key") or None
+    return model, provider, endpoint, api_key
 
 
 async def query(
@@ -88,7 +97,7 @@ Question: {question}
 
 Answer (include source references):"""
 
-    llm_model, llm_provider, llm_endpoint = _read_llm_config(_settings)
+    llm_model, llm_provider, llm_endpoint, llm_api_key = _read_llm_config(_settings)
 
     # Build transient-exception tuple (CogneeTransientError may be
     # missing in future Cognee versions — skip it gracefully).
@@ -101,14 +110,24 @@ Answer (include source references):"""
     if _CogneeTransient is not None:
         _transient += (_CogneeTransient,)
 
+    # Build kwargs, omitting None values to let litellm use its defaults
+    litellm_kwargs: dict = {
+        "model": llm_model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 500,
+    }
+    if llm_endpoint:
+        litellm_kwargs["api_base"] = llm_endpoint
+    if llm_provider and llm_provider != "custom":
+        litellm_kwargs["custom_llm_provider"] = llm_provider
+    # When LLM_PROVIDER=custom, litellm infers the provider from the
+    # model prefix (e.g. "openai/..." → OpenAI-compatible). Passing
+    # custom_llm_provider="custom" breaks routing.
+    if llm_api_key:
+        litellm_kwargs["api_key"] = llm_api_key
+
     try:
-        response = await litellm.acompletion(
-            model=llm_model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=500,
-            api_base=llm_endpoint,
-            custom_llm_provider=llm_provider,
-        )
+        response = await litellm.acompletion(**litellm_kwargs)
         answer = response.choices[0].message.content
         if answer is None:
             answer = "_(LLM returned an empty response)_"

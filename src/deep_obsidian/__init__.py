@@ -1,11 +1,11 @@
 """deep-obsidian — Obsidian vault to Cognee knowledge graph.
 
-Submodules (ingest, search, forget, status) are loaded lazily so that
-Cognee is not imported until it is actually needed.  This keeps ``--help``
-and other fast-path CLI commands free of Cognee's import-time logging.
+Submodules are loaded lazily so that Cognee is not imported until
+actually needed.  This keeps ``--help`` and other fast-path CLI
+commands free of Cognee's import-time logging.
 """
 
-__all__ = ["ingest", "search", "status", "forget"]
+__all__ = ["forget", "ingest", "query", "search", "service", "status"]
 __version__ = "0.1.0"
 
 
@@ -18,10 +18,18 @@ def __getattr__(name: str):
         from deep_obsidian.ingest import ingest
 
         return ingest
+    if name == "query":
+        from deep_obsidian.query import query
+
+        return query
     if name == "search":
         from deep_obsidian.search import search
 
         return search
+    if name == "service":
+        import deep_obsidian.service  # noqa: F811
+
+        return deep_obsidian.service
     if name == "status":
         from deep_obsidian.status import status
 

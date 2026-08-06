@@ -42,10 +42,19 @@ cognee>=1.4,<2.0
 ### ④ 数据跟 Vault 走
 
 ```python
-cognee.config.data_root_directory = str(vault / ".cognee")
+cognee.config.data_root_directory(str(vault / ".cognee"))
+cognee.config.system_root_directory(str(vault / ".cognee"))
 ```
 
 Cognee 所有持久化数据都在 vault 目录下。删除 vault 即删除所有数据。
+
+**注意：`cognee.config.X` 是类上的 staticmethod，必须以函数调用的形式设置** ——
+`cognee.config.data_root_directory = str(...)` 这种属性赋值语法看起来会通过
+pyright/运行时检查（因为 Python 允许覆盖类属性），但它只是把这个类属性替换成了一个
+字符串，从未调用过 Cognee 内部真正读写 `get_base_config()`（`@lru_cache` 记忆化）的
+setter 逻辑，对 Cognee 的实际配置**零效果**。这个错误曾经真实存在于本项目的
+ingest/forget/search 三个模块里、且被 ADR-0006 当作"已修复"记录下来，实际上从未
+生效过。详见 [ADR-0007](docs/adr/0007-config-setter-must-be-called-as-function.md)。
 
 ---
 
@@ -136,7 +145,8 @@ CLI 是 Python API 的薄封装。命令对应关系：
 | `search <query>` | `search(query)` |
 | `query <question>` | `query(question)` |
 | `status` | `status()` |
-| `forget` | `forget()` |
+| `forget <targets...>` | `forget(targets=[...])` |
+| `forget --all` | `forget(all=True)` |
 
 CLI 输出默认人类友好，`--json` 给 TS 消费。
 
@@ -210,3 +220,31 @@ export COGNEE_SKIP_CONNECTION_TEST=true
 ### uv sync --dev vs uv sync
 
 开发依赖（pytest 等）在 `[dependency-groups] dev` 下，必须 `uv sync --dev` 才能安装。
+
+### 逐项处理 + 落盘 checkpoint 的循环，必须逐项持久化
+
+`ingest()` Phase 1 曾经只在整个 for 循环跑完之后调用一次 `save_hashes()`。中途被打断（Ctrl+C / kill / 崩溃）会让所有已经成功 `cognee.add()` 的文件的进度全部丢失，下次运行把它们当新文件重新处理，在 Cognee 图谱里产生重复节点。详见 [ADR-0005](docs/adr/0005-incremental-checkpoint-persistence.md)。
+
+**规则（适用于本项目所有类似循环，写代码和审代码时都要检查）：**
+
+- [ ] 任何"逐项处理外部资源（网络调用 / LLM 调用）+ 落盘 checkpoint"的循环，必须在**每一项处理成功后立即持久化**，不能只在整批循环结束后统一存一次。
+- [ ] 高频写入的状态文件（如 `hashes.json`）必须原子写入（临时文件 + `os.replace`），不能直接 `write_text()` 覆盖，避免进程被杀导致文件截断/损坏。
+- [ ] 任何声称支持"可中断、重新运行可恢复/不重复处理"的功能，回归测试必须包含至少一个**模拟循环中途中断**的用例（用 `on_progress` 回调在第 N 项时抛异常），验证：(1) 中断前已完成的部分被正确持久化，(2) 恢复后不会被重复处理。仅测试"完整成功"和"完全失败"两种边界不足以覆盖这类 bug。参见 `tests/integration/test_interrupt_resilience.py`。
+- [ ] CLI 命令的异常处理不能只写 `except Exception`——`KeyboardInterrupt` 不继承自 `Exception`，Ctrl+C 会绕过它直接抛出裸 traceback。必须显式 `except KeyboardInterrupt` 给出清晰退出信息（退出码 130）。
+
+### checkpoint 不能盲目信任：必须验证 dataset 在 Cognee 中仍然存在
+
+`hashes.json` 里的 data_id 引用 Cognee 数据库中的 entities。如果 Cognee 数据库被重建（venv 重建、`uv sync`、换机器 clone），这些 data_id 变成悬空引用。但 `ingest()` 曾经只看文件 hash —— hash 匹配就跳过，从不验证 dataset 是否存在于 Cognee。结果：`ingest` 报告"75 unchanged"（实际零条数据入库），`search` 报 `DatasetNotFoundError`。详见 [ADR-0005](docs/adr/0005-incremental-checkpoint-persistence.md)。
+
+**规则**：
+
+- [ ] 当所有文件都被 hash 跳过（`unchanged_count > 0, total == 0`）时，必须先验证 dataset 在 Cognee 中存在（`cognee.datasets.list_datasets()`）。不存在则强制全量重建。
+- [ ] `mock_llm` fixture 必须同步 mock `cognee.datasets.list_datasets()`，否则所有依赖该 fixture 的测试在 stale-guard 路径上会调用真实 Cognee API。
+
+### 每个 Cognee 集成点必须同时设置 data_root_directory 和 system_root_directory
+
+只设置 `cognee.config.data_root_directory` 不能让数据真正跟着 vault 走——实际被 `add()`/`cognify()`/`recall()`/`forget()` 读写的图/向量/关系数据库位置由 `cognee.config.system_root_directory` 决定，未设置时默认落在一个固定的、machine/venv 级别的共享位置，所有 vault 会读写同一份数据库。`ingest()`、`forget()`、`search()` 三个模块都必须在触碰 Cognee 之前把两者一起设成 `str(project_root / ".cognee")`——并且必须以**函数调用**形式设置（`cognee.config.data_root_directory(...)`），不是属性赋值，见上面「④ 数据跟 Vault 走」和 [ADR-0007](docs/adr/0007-config-setter-must-be-called-as-function.md)。详见 [ADR-0006](docs/adr/0006-vault-isolation-and-forget-all-scope.md)。
+
+### 调用第三方 API 时，多个「作用域」参数不能假设是并集
+
+`cognee.forget(dataset=X, everything=True)` 曾被误用为"删除 dataset X 的全部数据"，但 `everything=True` 的真实语义是"忽略 dataset/dataset_id/data_id，删除这个 Cognee user 拥有的全部数据集"——`forget --all` 曾因此清空过同一台机器上其他 vault 的知识图谱。**规则：**调用任何第三方 API 时如果同时传了多个可能限定作用域的关键字参数，必须先读文档确认它们的优先级/互斥关系，不能假设它们是并集；对应的回归测试必须直接断言传给第三方 API 的实际关键字参数，而不能只断言本地可观察的副作用（mock 会让两种不同语义的调用在测试里长得一样）。参见 [ADR-0006](docs/adr/0006-vault-isolation-and-forget-all-scope.md) 和 `tests/unit/test_forget_helpers.py::TestForgetAllScope`。

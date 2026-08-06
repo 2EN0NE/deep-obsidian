@@ -32,7 +32,10 @@
 
 ## 测试总计
 
-**92 tests, 11 warnings, ~11s**
+**242 tests, ~1s (unit) / mock LLM (integration+e2e)**
 
-- 54 单元测试 (extractors 33 + settings 13 + fingerprints/scanner/progress/health)
-- 38 集成测试 (ingest 10 + search 6 + query 3 + filters 3 + incremental 3 + old 13, all with mock LLM)
+- 177 单元测试 (extractors + settings + service + ingest 辅助模块 + search helpers + logging_config 等，全部零 Cognee 依赖)
+- 26 集成测试 (ingest/search/query/filters/incremental/service，全部使用 mock_llm)
+- 39 e2e 测试 (CLI CliRunner，覆盖 init/ingest/search/query/forget/status + 中断处理)
+
+> 数字已过期请直接跑 `uv run python -m pytest tests/ --collect-only -q` 更新，不要手动同步维护。

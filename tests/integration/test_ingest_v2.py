@@ -28,7 +28,7 @@ class TestIngestRequiresInit:
 
         result = asyncio.run(ingest(str(tmp_path)))
         assert result["total"] >= 1
-        assert result["success"] >= 1
+        assert result["added"] >= 1
         assert result["failed"] == 0
 
     def test_ingest_single_file(self, tmp_path, mock_llm):
@@ -45,7 +45,7 @@ class TestIngestRequiresInit:
 
         result = asyncio.run(ingest(str(tmp_path / "posts" / "a.md")))
         assert result["total"] == 1
-        assert result["success"] == 1
+        assert result["added"] == 1
 
     def test_ingest_subdirectory(self, tmp_path, mock_llm):
         """ingest 支持子目录 target"""
@@ -62,4 +62,4 @@ class TestIngestRequiresInit:
 
         result = asyncio.run(ingest(str(sub)))
         assert result["total"] == 2
-        assert result["success"] == 2
+        assert result["added"] == 2

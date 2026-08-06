@@ -127,9 +127,7 @@ def extract_book(label: str, content: str) -> str:
 
 async def ask(question: str):
     # ── ① 检索 ──
-    ctx = await cognee.recall(
-        query_text=question, datasets=[DS], only_context=True, top_k=5
-    )
+    ctx = await cognee.recall(query_text=question, datasets=[DS], only_context=True, top_k=5)
 
     all_entries = []
     for r in ctx:
@@ -144,9 +142,7 @@ async def ask(question: str):
     if all_entries:
         for i, e in enumerate(all_entries[:15]):
             book = extract_book(e["label"], e["content"])
-            label_display = (
-                f" · 来源: {book}" if book != "(未识别)" else f" · {e['label']}"
-            )
+            label_display = f" · 来源: {book}" if book != "(未识别)" else f" · {e['label']}"
             print(f"\n  [{i + 1}] {label_display}")
             for line in e["content"].split("\n"):
                 stripped = line.strip()
@@ -186,11 +182,7 @@ async def ask(question: str):
     print(f"\n{'─' * 60}")
     print("③ 大模型回答")
     print(f"{'─' * 60}")
-    print(
-        "  📗 基于以上上下文生成"
-        if all_entries
-        else "  ⚠️  上下文为空，来自 LLM 自身知识"
-    )
+    print("  📗 基于以上上下文生成" if all_entries else "  ⚠️  上下文为空，来自 LLM 自身知识")
 
     results = await cognee.recall(query_text=question, datasets=[DS], top_k=3)
     for r in results:

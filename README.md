@@ -65,14 +65,17 @@ deep-obsidian --help
 # 1. 初始化项目
 uv run deep-obsidian init ~/my-obsidian-vault
 
-# 2. 导入你的笔记库
-uv run deep-obsidian ingest ~/my-obsidian-vault --dataset my-blog
+# 如果之前运行过，用 --force 重置到干净状态：
+uv run deep-obsidian init ~/my-obsidian-vault --force
 
-# 3. 语义搜索
-uv run deep-obsidian search "养成习惯有什么方法" --dataset my-blog
+# 2. 导入你的笔记库
+uv run deep-obsidian ingest ~/my-obsidian-vault
+
+# 3. 语义搜索（--dir 指向同一个 vault，数据集名自动从 settings.json 读取）
+uv run deep-obsidian search "养成习惯有什么方法" --dir ~/my-obsidian-vault
 
 # 4. 清理知识库
-uv run deep-obsidian forget --yes
+uv run deep-obsidian forget --all -y
 ```
 
 ---
@@ -84,31 +87,37 @@ uv run deep-obsidian forget --yes
 | `uv run deep-obsidian init <path>` | 初始化项目 |
 | `uv run deep-obsidian ingest <path>` | 导入 vault 所有 .md 文件 |
 | `ingest <path> --full` | 强制全量重建（忽略增量指纹） |
-| `uv run deep-obsidian search <query>` | 语义搜索 |
+| `uv run deep-obsidian service start` | 启动文件监控后台服务 |
+| `uv run deep-obsidian service stop` | 停止后台服务 |
+| `uv run deep-obsidian service status` | 查看服务运行状态 |
+| `uv run deep-obsidian search <query>` | 向量+关键词检索（不经过 LLM） |
 | `search <query> --json` | JSON 输出（给脚本/TS 消费） |
 | `search <query> --tag habit` | 按标签过滤 |
 | `uv run deep-obsidian query <question>` | LLM 问答（含引用来源） |
-| `uv run deep-obsidian forget` | 删除知识库（交互确认） |
-| `forget --yes` | 跳过确认 |
+| `uv run deep-obsidian forget <targets...>` | 遗忘指定文件/目录（支持目录、绝对路径、文件名匹配） |
+| `forget --all -y` | 清空整个知识库 |
 
 ### ingest 选项
 
 | 选项 | 默认 | 说明 |
 |------|------|------|
-| `--dataset`, `-d` | 目录名 | 知识库槽位名 |
 | `--full` | false | 忽略增量，全量重灌 |
 | `--json` | false | JSON 格式输出进度 |
+
+注：数据集名始终是 TARGET 路径下 `.deep-obsidian/settings.json` 里的 `name` 字段，没有单独的 dataset 参数可以覆盖。
 
 ### search 选项
 
 | 选项 | 默认 | 说明 |
 |------|------|------|
-| `--dataset`, `-d` | — | 搜索哪个知识库 |
-| `--top-k` | 5 | 返回结果数 |
+| `--dir` | 当前目录（向上查找） | 要搜的 vault 目录，数据集名自动从该目录的 settings.json 读取 |
+| `--top-k` | 5 | 每种检索方式（向量/关键词）各取多少条，去重合并后可能超过这个数 |
 | `--json` | false | JSON 输出 |
 | `--tag` | — | 按 tag 过滤 |
 | `--linked-to` | — | 查哪些笔记链接到指定笔记 |
 | `--linked-from` | — | 查指定笔记链接到哪些笔记 |
+
+`query` 和 `forget` 命令同样支持 `--dir` 指定 vault 目录（默认：当前目录向上查找）。
 
 ---
 
@@ -133,19 +142,20 @@ Cognee 完整日志同时写入 `~/.cognee/logs/`，无论控制台是否静默�
 ```python
 from deep_obsidian import ingest, search, status, forget
 
-# 入库
-result = await ingest("~/my-blog", dataset="my-blog")
-# => {"total": 74, "success": 72, "failed": 2, ...}
+# 入库（dataset 名总是该 vault 的 settings.json 里的 name）
+result = await ingest("~/my-blog")
+# => {"total": 74, "added": 50, "modified": 20, "deleted": 2, ...}
 
-# 搜索
-items = await search("习惯", dataset="my-blog", top_k=5)
-# => [{"label": "习惯", "content": "...", "layer": "semantic"}, ...]
+# 搜索（vault_path 指定要找哪个 vault，默认当前目录向上查找）
+items = await search("习惯", vault_path="~/my-blog", top_k=5)
+# => [{"label": "《掌控习惯》", "content": "...", "source_file": "Books/《掌控习惯》.md", "match_type": "vector"}, ...]
 
 # 状态
 info = await status("my-blog")
 
 # 清理
-await forget("my-blog")
+await forget(all=True, vault_path="~/my-blog")
+await forget(["Books/Justice.md"], vault_path="~/my-blog")
 ```
 
 ---

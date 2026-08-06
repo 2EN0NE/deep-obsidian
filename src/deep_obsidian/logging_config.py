@@ -108,19 +108,28 @@ def get_logger() -> logging.Logger:
 
 
 def _resolve_root(project_root: Path | None) -> Path:
+    """Resolve the log-directory root.
+
+    Priority order:
+    1. Explicit ``project_root`` argument.
+    2. ``find_project_root(Path.cwd())`` — picks up a vault the user
+       is standing in.
+    3. Silent fallback to ``$HOME`` — logs go to
+       ``~/.deep-obsidian/logs/``.  This is the common case when the
+       user runs from the repo root with ``--dir <path>`` pointing
+       at a vault elsewhere.
+
+    No warning is emitted on fallback — the user already knows which
+    vault they're targeting via the command-line arguments, and the
+    warning just adds noise (especially since this runs at *import*
+    time, before any CLI command can resolve its vault path).
+    """
     if project_root is not None:
         return project_root
     found = find_project_root(Path.cwd())
     if found is not None:
         return found
-    fallback = Path.home()
-    print(
-        f"[WARNING] No .deep-obsidian/ directory found. "
-        f"Run 'deep-obsidian init' first. "
-        f"Logs will be written to {fallback / SETTINGS_DIR / LOG_SUBDIR}",
-        file=sys.stderr,
-    )
-    return fallback
+    return Path.home()
 
 
 def _read_file_level(project_root: Path) -> int:

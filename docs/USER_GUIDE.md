@@ -134,7 +134,7 @@ my-blog/
 ```bash
 ENABLE_BACKEND_ACCESS_CONTROL=false \
 COGNEE_SKIP_CONNECTION_TEST=true \
-deep-obsidian ingest ~/my-blog --dataset my-blog
+deep-obsidian ingest ~/my-blog
 ```
 
 ### 预计耗时
@@ -151,12 +151,7 @@ deep-obsidian ingest ~/my-blog --dataset my-blog
 
 入库中途中断（Ctrl+C）不会丢失已完成的工作。重新执行相同命令即可从断点继续。
 
-```bash
-# 查看当前进度
-deep-obsidian status --dataset my-blog
-```
-
-进度文件存在项目根目录的 `.cognee-obsidian/progress.json`，哈希存在 `.deep-obsidian/hashes.json`。
+进度记录在项目根目录的 `.deep-obsidian/hashes.json`，每篇笔记的哈希和 Cognee data_id 都在里面，重新 ingest 时用来判断哪些文件已经处理过。
 
 ### 数据存储位置
 
@@ -183,25 +178,27 @@ my-blog/
 ### 基础搜索
 
 ```bash
-deep-obsidian search "养成习惯有什么方法" --dataset my-blog
+deep-obsidian search "养成习惯有什么方法" --dir ~/my-blog
 ```
 
 输出：
 
 ```
-[1] 习惯 (semantic): 从经验中学到的心理捷径，过去为解决问题而采取的步骤的记忆。
-[2] 培养良好习惯的四步法 (semantic): 养成习惯的过程分为提示、渴求、反应和奖励四个步骤。
+[1] 《掌控习惯》 (structural, Books/《掌控习惯》.md)
+[2] 欢迎 (structural, 欢迎.md)
 ```
 
-每行标注了 `layer`：
+`search` 不调用 LLM，返回的是原始笔记文本块。它取两种检索方式的并集，每条结果都标注了 `match_type`（CLI 文本输出不显示，`--json` 输出中可见）：
 
-- **semantic**：来自 LLM 语义推理的关联
-- **structural**：来自 wikilinks/tags 的结构关联
+- **vector**：向量相似度检索命中——能找到语义接近但措词不同的内容
+- **lexical**：关键词/BM25 检索命中——能找到字面匹配但语义不相似的内容
+
+两边各取 `--top-k` 条，去重后合并返回，所以结果数可能超过 `--top-k` 。想要 LLM 合成的自然语言回答，用 `deep-obsidian query` 。
 
 ### 按标签过滤
 
 ```bash
-deep-obsidian search "学习" --dataset my-blog --tag habit
+deep-obsidian search "学习" --dir ~/my-blog --tag habit
 ```
 
 只返回带 `#habit` 标签的笔记中与"学习"相关的内容。
@@ -210,10 +207,10 @@ deep-obsidian search "学习" --dataset my-blog --tag habit
 
 ```bash
 # 哪些笔记链接到了《原子习惯》？(入链)
-deep-obsidian search "习惯" --dataset my-blog --linked-from "原子习惯"
+deep-obsidian search "习惯" --dir ~/my-blog --linked-from "原子习惯"
 
 # 《原子习惯》链接到了哪些笔记？(出链)
-deep-obsidian search "" --dataset my-blog --linked-to "原子习惯"
+deep-obsidian search "" --dir ~/my-blog --linked-to "原子习惯"
 ```
 
 ### 调整返回数量
@@ -230,10 +227,10 @@ deep-obsidian search "习惯" --top-k 10
 
 ```bash
 # 第一次：全量入库
-deep-obsidian ingest ~/my-blog --dataset my-blog
+deep-obsidian ingest ~/my-blog
 
 # 修改一篇笔记后：
-deep-obsidian ingest ~/my-blog --dataset my-blog
+deep-obsidian ingest ~/my-blog
 # → 只处理变化的文件，其余跳过
 ```
 
@@ -242,41 +239,41 @@ deep-obsidian ingest ~/my-blog --dataset my-blog
 ### 强制全量重建
 
 ```bash
-deep-obsidian ingest ~/my-blog --dataset my-blog --full
+deep-obsidian ingest ~/my-blog --full
 ```
 
 ---
 
-## 槽位管理
+## 多 vault 管理
 
-你可以为不同的 vault 创建独立的槽位（dataset），它们互不可见。
+每个 vault 目录（跑过 `init` 的目录）都有自己独立的知识库，彼此互不可见。知识库的名字**总是**该 vault 的 `.deep-obsidian/settings.json` 里的 `name` 字段——没有单独的 dataset 参数可以覆盖，也不需要你记住任何内部名字。
+
+要同时管理多个独立的知识库，分别 `init` + `ingest` 不同的目录即可，查询时用 `--dir` 指定要查哪个：
 
 ```bash
 # 工作笔记
-deep-obsidian ingest ~/work-vault --dataset work
+deep-obsidian init ~/work-vault
+deep-obsidian ingest ~/work-vault
 
 # 个人博客
-deep-obsidian ingest ~/blog-vault --dataset blog
+deep-obsidian init ~/blog-vault
+deep-obsidian ingest ~/blog-vault
 
-# 搜索只在指定槽位内
-deep-obsidian search "KPI" --dataset work
-deep-obsidian search "旅行" --dataset blog
+# 搜索只在指定 vault 内（--dir 决定去哪个知识库找）
+deep-obsidian search "KPI" --dir ~/work-vault
+deep-obsidian search "旅行" --dir ~/blog-vault
 ```
 
-### 查看槽位状态
+`--dir` 省略时，会从当前目录向上查找最近的 `.deep-obsidian/`——如果你已经 `cd` 进了某个 vault，直接省略 `--dir` 也行。
+
+### 删除某个 vault 的知识库
 
 ```bash
-deep-obsidian status --dataset work
-```
-
-### 删除槽位
-
-```bash
-# 交互确认
-deep-obsidian forget
+# 交互确认（在该 vault 目录内，或加 --dir 指定）
+deep-obsidian forget --all --dir ~/work-vault
 
 # 跳过确认
-deep-obsidian forget --yes
+deep-obsidian forget --all --dir ~/work-vault --yes
 ```
 
 ---
@@ -288,17 +285,18 @@ deep-obsidian forget --yes
 ### 搜索
 
 ```bash
-deep-obsidian search "习惯" --dataset my-blog --json
+deep-obsidian search "习惯" --dir ~/my-blog --json
 ```
 
 ```json
 [
   {
-    "label": "习惯",
-    "content": "从经验中学到的心理捷径...",
-    "source_file": "graph",
-    "kind": "graph_completion",
-    "layer": "semantic"
+    "label": "《掌控习惯》",
+    "content": "---\ntags:\n  - template\n---\n# 《掌控习惯》\n\n习惯是从经验中学到的心理捷径...",
+    "source_file": "Books/《掌控习惯》.md",
+    "kind": "chunk",
+    "layer": "structural",
+    "match_type": "vector"
   }
 ]
 ```
@@ -306,7 +304,7 @@ deep-obsidian search "习惯" --dataset my-blog --json
 ### 入库进度
 
 ```bash
-deep-obsidian ingest ~/my-blog --dataset my-blog --json
+deep-obsidian ingest ~/my-blog --json
 ```
 
 ```json
@@ -317,10 +315,10 @@ deep-obsidian ingest ~/my-blog --dataset my-blog --json
 
 ```typescript
 const { stdout } = await exec(
-  "deep-obsidian search 'habit' --dataset my-blog --json"
+  "deep-obsidian search 'habit' --dir ~/my-blog --json"
 );
 const results = JSON.parse(stdout);
-// => [{ label: "习惯", content: "...", layer: "semantic" }, ...]
+// => [{ label: "《掌控习惯》", content: "...", source_file: "Books/《掌控习惯》.md", match_type: "vector" }, ...]
 ```
 
 ---
@@ -342,10 +340,10 @@ const results = JSON.parse(stdout);
 // obsidian-plugin/src/cognee.ts
 import { exec } from "child_process";
 
-export async function search(query: string, dataset: string) {
+export async function search(query: string, vaultDir: string) {
   return new Promise((resolve, reject) => {
     exec(
-      `deep-obsidian search "${query}" --dataset ${dataset} --json`,
+      `deep-obsidian search "${query}" --dir "${vaultDir}" --json`,
       (err, stdout) => {
         if (err) return reject(err);
         resolve(JSON.parse(stdout));
@@ -372,9 +370,9 @@ rm -f ~/my-blog/.cognee/databases/cognee_graph_ladybug/LOCK
 
 ### `No datasets found`
 
-原因：尚未执行 `ingest`，或指定了错误的 dataset 名。
+原因：尚未执行 `ingest`，或 `--dir` 指向了错误/尚未 ingest 过的 vault。
 
-解决：先 `ingest`，确认 dataset 名一致。
+解决：先对该 vault 执行 `ingest`；确认 `--dir` 指向的目录跑过 `init` 且 `.deep-obsidian/settings.json` 存在。
 
 ### `fastembed is not installed`
 
@@ -390,7 +388,9 @@ pip install fastembed
 
 ### `HF_HUB_OFFLINE` 模式下首次运行
 
-第一次运行需要下载 embedding 模型（~100MB）。确保网络畅通，不要设置 `HF_HUB_OFFLINE=1`。
+第一次在真实 vault 上运行 `ingest`时需要下载 embedding 模型（~100MB）。确保网络通畅，不要在这一次设置 `HF_HUB_OFFLINE=1`；模型下载并缓存到 `~/.cache/huggingface/` 之后，后继运行才可以安全地加上 `HF_HUB_OFFLINE=1` 保证完全离线。
+
+这和 CI 里 `HF_HUB_OFFLINE=1` 不冲突：`.github/workflows/ci.yml` 的 integration/e2e/compatibility 三个 job 都用 `mock_llm` fixture 把 `cognee.add`/`cognee.cognify`/`cognee.recall`/`cognee.forget` 换成了 stub，从不触发真实 embedding 计算，所以强制离线对它们是安全、确定性优先的选择——它描述的是“CI 上的已缓存/已 mock 环境”，不是本节描述的“本地第一次运行”。如果未来添加了走真实 Cognee 路径的集成测试（不再 mock add/recall），那个 job 需要单独处理模型缓存（例如 `actions/cache` 预缓存 `~/.cache/huggingface`），而不能直接继承这里的 `HF_HUB_OFFLINE=1`。
 
 ### ingest 运行一半报错
 
