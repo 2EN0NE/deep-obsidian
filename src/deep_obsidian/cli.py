@@ -272,6 +272,8 @@ def search(
     """
     from deep_obsidian.search import search as do_search
 
+    _start = _time.time()
+
     async def _run():
         return await do_search(
             query,
@@ -288,20 +290,34 @@ def search(
     try:
         with _quiet_stdout_when_json(json_output):
             results = asyncio.run(_run())
+        elapsed = _time.time() - _start
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         _sys.exit(1)
 
     if json_output:
-        click.echo(json.dumps(results, ensure_ascii=False, default=str))
+        results_with_meta = {
+            "results": results,
+            "elapsed": round(elapsed, 4),
+            "count": len(results),
+        }
+        click.echo(json.dumps(results_with_meta, ensure_ascii=False, default=str))
     elif not results:
         click.echo("No results found.")
     else:
         for i, r in enumerate(results, 1):
             label = r.get("label", "") or r.get("content", "")[:60].replace("\n", " ")
-            layer = r.get("layer", "?")
+            content = r.get("content", "")
+            match_type = r.get("match_type", "?")
             src = r.get("source_file", "?")
-            click.echo(f"[{i}] {label} ({layer}, {src})")
+            click.echo(f"[{i}] {label}")
+            if content:
+                # Indent and wrap the snippet for readability.
+                lines = content.strip().split("\n")
+                for line in lines[:10]:  # Cap at 10 lines — chunks are short anyway
+                    click.echo(f"    | {line}")
+            click.echo(f"    @ {src}  ({match_type})")
+        click.echo(f"\n搜索耗时 {elapsed:.2f}s，共 {len(results)} 条结果")
 
 
 @main.command()

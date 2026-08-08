@@ -34,6 +34,9 @@ jobs:
       - name: extractors/ Cognee-isolation guard (AGENTS.md 核心红线③)
         run: ./scripts/check_extractors_isolation.sh
 
+      - name: cognee.config usage guard (AGENTS.md 核心红线④)
+        run: ./scripts/check_cognee_config.sh
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10

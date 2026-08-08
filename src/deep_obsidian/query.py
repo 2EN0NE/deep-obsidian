@@ -8,6 +8,7 @@ from pathlib import Path
 import cognee.exceptions
 import litellm
 
+from deep_obsidian.search import SearchLockContentionError
 from deep_obsidian.search import search as do_search
 from deep_obsidian.settings import find_project_root, read_settings
 
@@ -68,7 +69,16 @@ async def query(
     _settings = read_settings(project_root)
     dataset = dataset or _settings["name"]
 
-    results = await do_search(question, dataset=dataset, vault_path=vault_path, top_k=top_k)
+    try:
+        results = await do_search(question, dataset=dataset, vault_path=vault_path, top_k=top_k)
+    except SearchLockContentionError:
+        return {
+            "answer": (
+                "The knowledge graph is currently being updated with new "
+                "or changed notes. Please retry your question in a moment."
+            ),
+            "sources": [],
+        }
 
     # Collect context and unique sources
     context_parts = []

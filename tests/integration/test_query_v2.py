@@ -178,3 +178,170 @@ class TestQueryLLMRouting:
         kwargs = fake_acompletion.call_args.kwargs
         assert kwargs["model"] == "env-model"
         assert kwargs["api_key"] == "sk-env"
+
+
+class TestQueryLockContention:
+    """query() must gracefully degrade when the underlying search()
+    exhausts its Ladybug lock retries — returning a friendly "retry
+    later" answer instead of letting a raw RuntimeError bubble up to
+    the CLI and confuse the user (P1 from test-coverage audit).
+    """
+
+    def test_query_returns_friendly_answer_when_search_lock_exhausted(
+        self, tmp_path, mock_llm, monkeypatch
+    ):
+        """search() retries exhausted → query() catches the specific
+        SearchLockContentionError and returns a helpful answer."""
+        import asyncio
+
+        from deep_obsidian.query import query
+        from deep_obsidian.search import SearchLockContentionError
+        from deep_obsidian.settings import init_project
+
+        (tmp_path / "a.md").write_text("# A")
+        init_project(tmp_path, name="query-lock-test")
+
+        async def _fake_search_lock_exhausted(
+            query_text,
+            dataset=None,
+            vault_path=None,
+            top_k=5,
+            tag=None,
+            linked_to=None,
+            linked_from=None,
+            date_from=None,
+            date_to=None,
+            source=None,
+        ):
+            raise SearchLockContentionError(
+                "Search failed after retries: the knowledge graph "
+                "is currently being written to (likely by a "
+                "background sync). Please retry in a moment."
+            )
+
+        monkeypatch.setattr(
+            "deep_obsidian.query.do_search",
+            _fake_search_lock_exhausted,
+        )
+
+        result = asyncio.run(query("habits", vault_path=str(tmp_path)))
+
+        assert isinstance(result, dict)
+        assert "answer" in result
+        assert "retry" in result["answer"].lower()
+        assert result["sources"] == []
+
+    def test_query_still_propagates_unrelated_errors(self, tmp_path, mock_llm, monkeypatch):
+        """Non-lock errors (e.g. config, auth) must still propagate —
+        only SearchLockContentionError is caught and turned into a
+        friendly fallback."""
+        import asyncio
+
+        from deep_obsidian.query import query
+        from deep_obsidian.settings import init_project
+
+        (tmp_path / "a.md").write_text("# A")
+        init_project(tmp_path, name="query-nonlock-test")
+
+        async def _fake_search_config_error(
+            query_text,
+            dataset=None,
+            vault_path=None,
+            top_k=5,
+            tag=None,
+            linked_to=None,
+            linked_from=None,
+            date_from=None,
+            date_to=None,
+            source=None,
+        ):
+            raise RuntimeError("Unrelated config error: bad API endpoint")
+
+        monkeypatch.setattr(
+            "deep_obsidian.query.do_search",
+            _fake_search_config_error,
+        )
+
+        import pytest
+
+        with pytest.raises(RuntimeError, match="Unrelated config error"):
+            asyncio.run(query("habits", vault_path=str(tmp_path)))
+
+
+class TestQueryLLMTransientFallback:
+    """query()'s inline LLM call must gracefully degrade when litellm
+    hits a transient error (timeout, connection failure, rate limit,
+    service unavailable) — returning raw retrieval results instead of
+    crashing.
+
+    Regression: _fake_acompletion in the shared mock_llm fixture always
+    returns success, so the ~20-line transient-exception fallback path
+    in query.py:131-137 was never exercised by any test.
+    """
+
+    @pytest.mark.parametrize(
+        "exception_class",
+        [
+            "APIConnectionError",
+            "Timeout",
+            "ServiceUnavailableError",
+            "RateLimitError",
+        ],
+    )
+    def test_llm_transient_error_returns_fallback_answer(
+        self, tmp_path, mock_llm, monkeypatch, exception_class
+    ):
+        import asyncio
+
+        from deep_obsidian.ingest import ingest
+        from deep_obsidian.query import query
+        from deep_obsidian.settings import init_project
+
+        (tmp_path / "a.md").write_text("# Habits\n\nHabits are automatic behaviors.")
+        init_project(tmp_path, name="llm-fallback-test")
+        asyncio.run(ingest(str(tmp_path)))
+
+        # litellm.exceptions 在函数内导入以避免模块级导入时的解析问题
+        import litellm
+
+        exc_cls = getattr(litellm.exceptions, exception_class)
+        from unittest.mock import AsyncMock
+
+        fake_acompletion = AsyncMock(
+            side_effect=exc_cls(
+                "simulated transient LLM error",
+                llm_provider="openai",
+                model="test-model",
+            )
+        )
+        monkeypatch.setattr("deep_obsidian.query.litellm.acompletion", fake_acompletion)
+
+        result = asyncio.run(query("habits", vault_path=str(tmp_path)))
+
+        assert isinstance(result, dict)
+        assert "answer" in result
+        assert "LLM unavailable" in result["answer"]
+        assert len(result["answer"]) > 0
+        assert isinstance(result["sources"], list)
+
+    def test_llm_permanent_error_still_propagates(self, tmp_path, mock_llm, monkeypatch):
+        """Non-transient LLM errors (auth, bad model) must still propagate."""
+        import asyncio
+
+        from deep_obsidian.query import query
+        from deep_obsidian.settings import init_project
+
+        (tmp_path / "a.md").write_text("# Test")
+        init_project(tmp_path, name="llm-permanent-test")
+
+        from deep_obsidian.ingest import ingest
+
+        asyncio.run(ingest(str(tmp_path)))
+
+        from unittest.mock import AsyncMock
+
+        fake_acompletion = AsyncMock(side_effect=ValueError("invalid model name"))
+        monkeypatch.setattr("deep_obsidian.query.litellm.acompletion", fake_acompletion)
+
+        with pytest.raises(ValueError, match="invalid model name"):
+            asyncio.run(query("test", vault_path=str(tmp_path)))

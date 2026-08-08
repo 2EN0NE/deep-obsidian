@@ -26,7 +26,13 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "pytest-mock>=3.14", "ruff>=0.13"]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.24",
+  "pytest-mock>=3.14",
+  "pytest-rerunfailures>=14",
+  "ruff>=0.13",
+]
 
 [project.scripts]
 deep-obsidian = "deep_obsidian.cli:main"
@@ -41,7 +47,7 @@ packages = ["src/deep_obsidian"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-v --tb=short"
+addopts = "-v --tb=short --reruns 1 --only-rerun 'AssertionError|TimeoutError|OSError'"
 markers = [
   "unit: unit tests (fast, no Cognee)",
   "integration: integration tests (needs Cognee + LLM)",

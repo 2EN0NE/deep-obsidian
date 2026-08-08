@@ -129,12 +129,18 @@ def _try_create(path: Path, state: dict) -> bool:
     return True
 
 
-def acquire(project_root: Path, dataset: str, total: int) -> ProgressHandle:
+def acquire(
+    project_root: Path, dataset: str, total: int, *, now: float | None = None
+) -> ProgressHandle:
     """Exclusively acquire the progress/lock file for a new ingest run.
 
     Raises ``IngestAlreadyRunningError`` if another live ingest already
     holds the lock. A lock left behind by a dead process (crash,
     SIGKILL) is cleaned up and re-acquired automatically.
+
+    *now* is an optional timestamp override for ``started_at`` — only
+    exposed for tests that need deterministic timestamps without
+    monkeypatching ``time.time``.
     """
     path = _progress_path(project_root)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -146,7 +152,7 @@ def acquire(project_root: Path, dataset: str, total: int) -> ProgressHandle:
         "current": 0,
         "total": total,
         "current_file": "",
-        "started_at": time.time(),
+        "started_at": now if now is not None else time.time(),
     }
 
     if _try_create(path, initial_state):

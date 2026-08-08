@@ -59,6 +59,7 @@
 class IngestAlreadyRunningError(RuntimeError):
     """已有另一个存活的 ingest 持有锁。"""
 
+
 def acquire(project_root, dataset, total) -> ProgressHandle:
     """独占创建运行状态文件；已有存活的运行状态则抛 IngestAlreadyRunningError；
     发现的是死亡进程留下的孤儿状态则清理后重试一次（复刻 service 的
@@ -66,8 +67,10 @@ def acquire(project_root, dataset, total) -> ProgressHandle:
     进入即已持锁，退出（无论正常返回还是异常）保证释放/清理，
     调用方不需要自己包 try/finally。"""
 
+
 class ProgressHandle:
     def update(self, phase, current, total, current_file=""): ...
+
 
 def read_state(project_root) -> dict | None:
     """纯读取，供 status() 使用；不参与锁语义，不会被误判为"抢锁"。"""

@@ -92,6 +92,50 @@ class TestInitProject:
             assert data["deep-obsidian-id"] == first["deep-obsidian-id"]
             assert data["name"] == "first"
 
+    def test_force_clears_existing_state_and_recreates(self):
+        """--force 清除所有旧状态后重新创建 — 工厂重置路径。
+
+        Regression: init --force 路径（settings.py:94-101）删除了
+        .deep-obsidian/、.cognee/、$HOME/.deep-obsidian/ 三个目录，
+        但没有自动化测试验证这一行为。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+
+            # 创建旧状态
+            old_settings = root / ".deep-obsidian"
+            old_cognee = root / ".cognee"
+            old_settings.mkdir()
+            (old_settings / "settings.json").write_text('{"name":"old"}')
+            old_cognee.mkdir()
+            (old_cognee / "stale.db").write_text("stale data")
+
+            # --force 后应该是全新的
+            result = init_project(root, name="new-vault", force=True)
+            assert result["name"] == "new-vault"
+
+            settings = json.loads((root / ".deep-obsidian" / "settings.json").read_text())
+            assert settings["name"] == "new-vault"
+
+            # 旧状态已被清除
+            assert not (root / ".cognee").exists(), ".cognee/ should have been removed by force"
+
+    def test_force_with_nonexistent_dir_still_works(self):
+        """对不存在的目录 --force 也应该正常创建项目。
+
+        Regression: CLI 的 init 命令允许 `--force` 用于不存在的目录
+        （cli.py 中 `if not force and not _target.exists()` 的逻辑），
+        但 init_project 本身没有 force + 不存在路径的测试。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "new-project"
+            assert not root.exists()
+
+            result = init_project(root, name="brand-new", force=True)
+            assert result["name"] == "brand-new"
+            assert root.exists()
+            assert (root / ".deep-obsidian" / "settings.json").is_file()
+
 
 class TestReadWriteSettings:
     """read_settings / write_settings 读写配置"""

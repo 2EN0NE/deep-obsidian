@@ -578,3 +578,101 @@ class TestIngestLockContention:
             assert result.exit_code != 0
             assert "Traceback" not in result.output
             assert "lock-contention-json" in result.output
+
+
+class TestSearch:
+    """search 命令输出格式测试。"""
+
+    def test_json_output_includes_elapsed_and_count(
+        self, tmp_path: Path, runner: CliRunner, mock_llm
+    ) -> None:
+        from deep_obsidian.settings import init_project
+
+        (tmp_path / "note.md").write_text("# Habits\n\nHabits are automatic.")
+        init_project(tmp_path, name="search-json-test")
+
+        import os as _os
+
+        _cwd = _os.getcwd()
+        try:
+            _os.chdir(tmp_path)
+            runner.invoke(main, ["ingest", str(tmp_path)])
+            result = runner.invoke(main, ["search", "habits", "--json"])
+        finally:
+            _os.chdir(_cwd)
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "results" in data
+        assert "elapsed" in data
+        assert isinstance(data["elapsed"], (int, float))
+        assert data["count"] == len(data["results"])
+
+    def test_human_readable_shows_snippet_and_source(
+        self, tmp_path: Path, runner: CliRunner, mock_llm
+    ) -> None:
+        """人可读输出应包含：编号、片段原文（| 前缀）、出处（@ 前缀）、
+        匹配类型（vector/lexical）、耗时和条数汇总行。"""
+        from deep_obsidian.settings import init_project
+
+        (tmp_path / "note.md").write_text(
+            "# Habits\n\nHabits are automatic behaviors triggered by cues."
+        )
+        init_project(tmp_path, name="search-human-test")
+
+        import os as _os
+
+        _cwd = _os.getcwd()
+        try:
+            _os.chdir(tmp_path)
+            runner.invoke(main, ["ingest", str(tmp_path)])
+            result = runner.invoke(main, ["search", "habits"])
+        finally:
+            _os.chdir(_cwd)
+
+        assert result.exit_code == 0
+        out = result.output
+        # 有编号
+        assert "[1]" in out
+        # 有片段原文（带 | 缩进）
+        assert "    | " in out
+        # 有出处（@ 路径）
+        assert "    @ " in out
+        # 有匹配类型
+        has_match_type = "(vector)" in out or "(lexical)" in out
+        assert has_match_type, f"Expected (vector) or (lexical) in output: {out}"
+        # 有耗时+条数汇总
+        assert "搜索耗时 " in out
+        assert "共 " in out and " 条结果" in out
+
+    def test_empty_result_shows_no_results(
+        self, tmp_path: Path, runner: CliRunner, mock_llm
+    ) -> None:
+        """无结果时应输出友好提示，不显示耗时汇总。"""
+        from unittest.mock import patch
+
+        from deep_obsidian.settings import init_project
+
+        (tmp_path / "note.md").write_text("# Test")
+        init_project(tmp_path, name="search-empty-test")
+
+        # mock_llm 的 _fake_recall 始终返回 2 条固定结果，需要在
+        # 本测试中 patch recall 返回空列表来验证空结果路径。
+        async def _empty_recall(*args, **kwargs):
+            return []
+
+        import os as _os
+
+        _cwd = _os.getcwd()
+        try:
+            _os.chdir(tmp_path)
+            runner.invoke(main, ["ingest", str(tmp_path)])
+            with patch("deep_obsidian.search._recall_with_retry", new=_empty_recall):
+                result = runner.invoke(main, ["search", "nothing"])
+        finally:
+            _os.chdir(_cwd)
+
+        assert result.exit_code == 0
+        assert "No results found." in result.output
+        # 无结果时不显示耗时汇总
+        assert "搜索耗时" not in result.output

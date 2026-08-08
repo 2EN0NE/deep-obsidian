@@ -36,6 +36,15 @@ _MAX_RECALL_RETRIES = 3
 _RECALL_RETRY_BASE_SECONDS = 1.0
 
 
+class SearchLockContentionError(RuntimeError):
+    """Raised when search exhausts retries on a locked Ladybug graph.
+
+    Downstream callers (e.g. :func:`deep_obsidian.query.query`) can
+    catch this specific type to return a friendly degradation message
+    instead of matching against a fragile error string.
+    """
+
+
 async def _recall_with_retry(
     query_text: str,
     datasets: list[str] | None,
@@ -60,7 +69,7 @@ async def _recall_with_retry(
             if not any(kw in msg for kw in _LOCK_KEYWORDS):
                 raise
             if attempt == _MAX_RECALL_RETRIES - 1:
-                raise RuntimeError(
+                raise SearchLockContentionError(
                     "Search failed after retries: the knowledge graph "
                     "is currently being written to (likely by a "
                     "background sync). Please retry in a moment."

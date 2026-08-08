@@ -22,6 +22,7 @@ import cognee
 
 from deep_obsidian.ingest._fingerprint import load_hashes, save_hashes
 from deep_obsidian.ingest._health import clear_ladybug_lock
+from deep_obsidian.ingest._progress_state import is_process_alive, read_state
 from deep_obsidian.settings import find_project_root, read_settings
 
 
@@ -64,6 +65,21 @@ async def forget(
     _settings = read_settings(project_root)
     dataset_name = dataset or _settings["name"]
     hashes_path = str(project_root / ".deep-obsidian" / "hashes.json")
+
+    # Guard: refuse to operate while an ingest is in progress — both
+    # forget and ingest write to the same Cognee graph database and
+    # the same hashes.json; running them concurrently would race on
+    # both.  (search/query are read-only — they get a retry loop
+    # instead — but forget is a mutating operation.)
+    state = read_state(project_root)
+    if state is not None:
+        pid = state.get("pid")
+        if isinstance(pid, int) and is_process_alive(pid):
+            raise RuntimeError(
+                f"Cannot forget while an ingest is running for dataset "
+                f"'{state.get('dataset')}' (PID {pid}, phase: {state.get('phase')}). "
+                f"Wait for it to complete or stop it first."
+            )
 
     # Initialize Cognee with project-local data directory.
     # Without this, forget() can't find the database and may hang

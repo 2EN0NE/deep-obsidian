@@ -60,7 +60,7 @@ class TestSearchLadybugLockRetry:
         self, tmp_path, mock_llm, monkeypatch
     ):
         from deep_obsidian.ingest import ingest
-        from deep_obsidian.search import search
+        from deep_obsidian.search import SearchLockContentionError, search
         from deep_obsidian.settings import init_project
 
         (tmp_path / "a.md").write_text("# A")
@@ -78,7 +78,7 @@ class TestSearchLadybugLockRetry:
 
         import pytest
 
-        with pytest.raises(RuntimeError, match="knowledge graph is currently being"):
+        with pytest.raises(SearchLockContentionError, match="knowledge graph is currently being"):
             asyncio.run(search("test", vault_path=str(tmp_path)))
 
     def test_non_lock_errors_are_not_retried(self, tmp_path, mock_llm, monkeypatch):
