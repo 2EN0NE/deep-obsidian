@@ -7,3 +7,12 @@ repos:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+  # 本地快速层：unit 测试零 Cognee 依赖、毫秒级（实测 ~4s），提交前拦截回归。
+  # 与 CI 的 test job 命令语义一致（uv run pytest tests/unit）。
+  - repo: local
+    hooks:
+      - id: unit-tests
+        name: unit tests (fast, no Cognee)
+        entry: uv run pytest tests/unit -q
+        language: system
+        pass_filenames: false

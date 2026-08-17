@@ -7,6 +7,60 @@ from unittest.mock import patch
 
 import pytest
 
+# ── Mock↔真实 cognee API 契约 ──
+# 真实 cognee.add/cognify 签名带 **kwargs，mock 保留 **kwargs 是忠实模拟；
+# 真实 cognee.update/forget/recall 签名**没有** **kwargs——mock 必须同样拒绝
+# 未知关键字，否则调用方传错参数名时 mock 静默放行、只有真实环境才炸
+# （ADR-0006 的 bug class：mock 与真实行为不一致）。
+# 这些白名单与已安装 cognee 签名的一致性由
+# tests/integration/test_cognee_contract.py 用 inspect 自动校验，防止漂移。
+UPDATE_ALLOWED_KWARGS = {
+    "user",
+    "node_set",
+    "vector_db_config",
+    "graph_db_config",
+    "preferred_loaders",
+    "incremental_loading",
+    "data_cache",
+}
+RECALL_ALLOWED_KWARGS = {
+    "datasets",
+    "dataset_ids",
+    "top_k",
+    "auto_route",
+    "scope",
+    "system_prompt",
+    "system_prompt_path",
+    "node_name",
+    "node_name_filter_operator",
+    "only_context",
+    "session_id",
+    "context_profile",
+    "wide_search_top_k",
+    "triplet_distance_penalty",
+    "feedback_influence",
+    "verbose",
+    "retriever_specific_config",
+    "neighborhood_depth",
+    "neighborhood_seed_top_k",
+    "include_references",
+    "user",
+    "llm_config",
+    "embedding_config",
+}
+
+
+def _reject_unknown_kwargs(fn_name: str, kwargs: dict, allowed: set[str]) -> None:
+    """Raise TypeError for kwargs not in *allowed*.
+
+    Mirrors the real cognee signature, which has no **kwargs for
+    update/forget/recall — a wrong keyword name must fail the test the
+    same way it would against the real API.
+    """
+    unknown = sorted(set(kwargs) - allowed)
+    if unknown:
+        raise TypeError(f"{fn_name}() got unexpected keyword arguments: {', '.join(unknown)}")
+
 
 @pytest.fixture
 def mock_llm():
@@ -31,6 +85,7 @@ def mock_llm():
         return [type("FakeDataset", (), {"name": n, "id": f"fake-{n}"})() for n in _dataset_names]
 
     async def _fake_update(data_id, data, dataset_id, **kwargs):
+        _reject_unknown_kwargs("cognee.update", kwargs, UPDATE_ALLOWED_KWARGS)
         return type("RunInfo", (), {"status": "completed"})()
 
     async def _fake_forget(
@@ -48,7 +103,8 @@ def mock_llm():
         # a TypeError, the same way it would against the real API.
         return None
 
-    async def _fake_recall(query_text=None, datasets=None, top_k=5, only_context=False, **kwargs):
+    async def _fake_recall(query_text=None, query_type=None, **kwargs):
+        _reject_unknown_kwargs("cognee.recall", kwargs, RECALL_ALLOWED_KWARGS)
         return [
             type(
                 "RecallResult",

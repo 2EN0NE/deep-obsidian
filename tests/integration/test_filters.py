@@ -20,10 +20,15 @@ class TestObsidianFilters:
 
         await ingest(str(wikilink_vault), dataset="filter_test_1")
 
-        # All notes in wikilink_vault have tags: [habit] or [habit, psychology]
+        # mock_llm 固定召回 2 条：habit（tags=[habit, psychology]）与
+        # cue（tags=[habit]）。tag=psychology 过滤后 cue 那条必须被排除——
+        # 只断言条数（<=2）无法证明过滤真正生效，必须断言非匹配项未泄漏。
         results = await search("habit", dataset="filter_test_1", tag="psychology")
-        # Only habit.md has psychology tag
-        assert len(results) <= 2  # habit had psychology tag
+        assert results, "tag=psychology 过滤后不应为空"
+        for r in results:
+            assert "cue triggers" not in r.get("content", ""), (
+                f"tag filter failed: non-psychology chunk leaked: {r.get('content', '')[:60]}"
+            )
 
     @pytest.mark.asyncio
     async def test_search_linked_from(self, wikilink_vault: Path, mock_llm):

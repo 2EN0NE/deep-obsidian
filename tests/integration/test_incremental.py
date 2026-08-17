@@ -67,7 +67,7 @@ class TestIncrementalIngest:
         r1 = asyncio.run(ingest(str(tmp_path)))
         assert r1["added"] == 1
 
-        hashes_path = str(tmp_path / ".deep-obsidian" / "hashes.json")
+        hashes_path = str(tmp_path / ".deep-obsidian" / "vault" / "hashes.json")
         data_id_before = load_hashes(hashes_path)["note.md"]["data_id"]
 
         # Second ingest with full=True — reprocesses despite unchanged content,
@@ -110,7 +110,78 @@ class TestIncrementalIngest:
         assert r2["modified"] == 1  # keep.md, reprocessed via update()
         assert r2["deleted"] == 1  # gone.md, still detected and cleaned up
 
-        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "hashes.json"))
+        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "vault" / "hashes.json"))
         assert "gone.md" not in hashes
         assert "keep.md" in hashes
         assert "new.md" in hashes
+
+
+class TestLegacyV1HashesUpgrade:
+    """hashes.json v1 格式（entry 有 hash 无 data_id）的升级路径。
+
+    ingest/__init__.py:273 的 "No data_id — treat as add (old format
+    upgrade path)" 分支此前只在 save 函数层（test_fingerprint）测过，
+    没有集成用例触发 ingest() 内的真实升级：v1 文件被修改后走 update
+    分支、发现缺 data_id、回退到 add() 并补写 data_id。
+    """
+
+    def _v1_hashes(self, tmp_path, rel: str):
+        """构造 v1 格式 hashes.json（{rel: {"hash": ...}}，无 data_id）。"""
+        from deep_obsidian.ingest._fingerprint import file_hash, save_hashes
+
+        save_hashes(
+            str(tmp_path / ".deep-obsidian" / "vault" / "hashes.json"),
+            {rel: {"hash": file_hash(str(tmp_path / rel))}},
+        )
+
+    def test_unchanged_v1_file_still_skipped(self, tmp_path, mock_llm):
+        """v1 格式下未修改的文件第二次 ingest 仍按 hash 跳过（不重复入库）。"""
+        import asyncio
+
+        from deep_obsidian.ingest import ingest
+        from deep_obsidian.settings import init_project
+
+        (tmp_path / "a.md").write_text("# A\n\nContent A.")
+        init_project(tmp_path, name="v1-skip")
+        asyncio.run(ingest(str(tmp_path)))
+
+        # 降级为 v1 格式（模拟旧版本遗留的 hashes.json）
+        self._v1_hashes(tmp_path, "a.md")
+        r = asyncio.run(ingest(str(tmp_path)))
+        assert r["unchanged"] == 1
+        assert r["added"] == 0
+        assert r["modified"] == 0
+
+    def test_modified_v1_file_upgrades_with_data_id(self, tmp_path, mock_llm):
+        """v1 文件被修改 → update 分支发现无 data_id → 回退 add() 并升级为 v2。
+
+        Regression：该升级路径若误复用/丢弃 data_id，会在 Cognee 图谱产生
+        重复节点（ADR-0005 的 bug class）。断言：added==1（不是 modified，
+        因为旧 entry 无 data_id 无从 update），且升级后 entry 含 data_id。
+        """
+        import asyncio
+
+        from deep_obsidian.ingest import ingest
+        from deep_obsidian.ingest._fingerprint import load_hashes
+        from deep_obsidian.settings import init_project
+
+        (tmp_path / "a.md").write_text("# A\n\nContent A.")
+        init_project(tmp_path, name="v1-upgrade")
+        asyncio.run(ingest(str(tmp_path)))
+
+        # 降级为 v1 格式，然后修改文件内容 → 触发 update 分支的升级路径
+        self._v1_hashes(tmp_path, "a.md")
+        (tmp_path / "a.md").write_text("# A\n\nUpdated content.")
+
+        r = asyncio.run(ingest(str(tmp_path)))
+        assert r["added"] == 1, f"expected fallback-to-add upgrade, got {r}"
+        assert r["modified"] == 0
+        assert r["failed"] == 0
+
+        # 升级后 entry 必须带 data_id（v2 格式）
+        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "vault" / "hashes.json"))
+        assert hashes["a.md"].get("data_id"), f"a.md 未升级为 v2: {hashes['a.md']}"
+        # hash 反映新内容
+        from deep_obsidian.ingest._fingerprint import file_hash
+
+        assert hashes["a.md"]["hash"] == file_hash(str(tmp_path / "a.md"))
