@@ -235,6 +235,10 @@ jobs:
       contents: read
 
     steps:
+      # dorny/test-reporter 用 git ls-files 展开 path glob（**/*.xml），
+      # 无 checkout 会报 "not a git repository"。
+      - uses: actions/checkout@v4
+
       - name: Download all test results
         uses: actions/download-artifact@v4
         with:
