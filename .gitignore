@@ -54,3 +54,6 @@ obsidian-test/
 # Claude / AI agent metadata
 .claude/
 .claudian/
+
+# install.sh runtime log
+logs/

@@ -10,7 +10,7 @@ import litellm
 
 from deep_obsidian.search import SearchLockContentionError
 from deep_obsidian.search import search as do_search
-from deep_obsidian.settings import find_project_root, read_settings
+from deep_obsidian.settings import resolve_config
 
 # ── Transient LLM errors where a fallback answer is acceptable ──
 # Cognee wraps litellm calls and may re-raise transient errors as its
@@ -21,29 +21,20 @@ _CogneeTransient: type[Exception] | None = getattr(cognee.exceptions, "CogneeTra
 def _read_llm_config(settings: dict) -> tuple[str, str | None, str | None, str | None]:
     """Extract LLM model, provider, endpoint, and api_key from settings.
 
-    Environment variables (LLM_MODEL, LLM_PROVIDER, LLM_ENDPOINT,
-    LLM_API_KEY) take precedence over settings.json values, matching
-    Cognee's own resolution order.
+    Reads the top-level ``llm`` section of settings.jsonc (ADR-0011) —
+    the single source of truth.  Environment variables no longer
+    override it (ADR-0012): the LLM config lives in the project file,
+    not in the shell.
 
     Returns:
         (model, provider, endpoint, api_key) — provider, endpoint, and
         api_key may be None if not configured.
     """
-    import os as _os
-
-    backend = settings.get("backend", {})
-    if backend.get("type") != "cognee":
-        raise RuntimeError(
-            f"Unsupported backend type: {backend.get('type', 'unknown')!r}. "
-            f"Only 'cognee' is currently supported."
-        )
-    cognee_cfg = backend.get("cognee", {})
-
-    # Env vars take precedence (same order Cognee uses via dotenv/pydantic-settings)
-    model = _os.environ.get("LLM_MODEL") or cognee_cfg.get("llm_model", "deepseek-chat")
-    provider = _os.environ.get("LLM_PROVIDER") or cognee_cfg.get("llm_provider") or None
-    endpoint = _os.environ.get("LLM_ENDPOINT") or cognee_cfg.get("llm_endpoint") or None
-    api_key = _os.environ.get("LLM_API_KEY") or cognee_cfg.get("llm_api_key") or None
+    llm_cfg = settings.get("llm", {})
+    model = llm_cfg.get("model") or "openai/gpt-5-mini"
+    provider = llm_cfg.get("provider") or None
+    endpoint = llm_cfg.get("endpoint") or None
+    api_key = llm_cfg.get("api_key") or None
     return model, provider, endpoint, api_key
 
 
@@ -53,6 +44,7 @@ async def query(
     dataset: str | None = None,
     vault_path: str | Path | None = None,
     top_k: int = 5,
+    config_path: str | Path | None = None,
 ) -> dict:
     """Answer a question using the knowledge graph, with source citations.
 
@@ -60,17 +52,26 @@ async def query(
         dict with "answer" (str) and "sources" (list of source_file strings).
     """
     lookup = Path(vault_path) if vault_path else Path.cwd()
-    project_root = find_project_root(lookup)
-    if project_root is None:
-        raise RuntimeError(
-            "No .deep-obsidian/ directory found. "
-            "Run 'deep-obsidian init' first in the project root."
-        )
-    _settings = read_settings(project_root)
-    dataset = dataset or _settings["name"]
+    # 配置层级解析（ADR-0014）：--config（显式）> 项目级（从 vault 或 cwd
+    # 向上找 .deep-obsidian/）> 用户级 ~/.deep-obsidian（必需基础层）。
+    # vault 定位数据。
+    resolved = resolve_config(vault=lookup, cwd=Path.cwd(), config_path=config_path)
+    dataset = dataset or resolved.settings["name"]
+
+    # ADR-0012：触碰任何 Cognee API 前统一注入配置（query 经 do_search
+    # 接触 Cognee，此处显式注入以保证约定完整、防御未来直接调用）。
+    from deep_obsidian.config import inject_config
+
+    inject_config(resolved)
 
     try:
-        results = await do_search(question, dataset=dataset, vault_path=vault_path, top_k=top_k)
+        results = await do_search(
+            question,
+            dataset=dataset,
+            vault_path=vault_path,
+            top_k=top_k,
+            config_path=config_path,
+        )
     except SearchLockContentionError:
         return {
             "answer": (
@@ -107,7 +108,7 @@ Question: {question}
 
 Answer (include source references):"""
 
-    llm_model, llm_provider, llm_endpoint, llm_api_key = _read_llm_config(_settings)
+    llm_model, llm_provider, llm_endpoint, llm_api_key = _read_llm_config(resolved.settings)
 
     # Build transient-exception tuple (CogneeTransientError may be
     # missing in future Cognee versions — skip it gracefully).

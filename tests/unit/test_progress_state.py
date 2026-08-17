@@ -92,6 +92,45 @@ class TestRelease:
             assert state["dataset"] == "another-vault"
 
 
+class TestUserLevelVaultIsolation:
+    """用户级配置下进度/锁文件按 vault 隔离（ADR-0014）——
+    两个独立 vault 不共享 ~/.deep-obsidian/progress.json，避免假互斥。
+    """
+
+    def test_user_level_progress_scoped_under_vault_hash(self, tmp_path):
+        from deep_obsidian.settings import vault_path_hash
+
+        config_dir = tmp_path / ".deep-obsidian"
+        vault = tmp_path / "vault"
+        with acquire(config_dir, dataset="v", total=1, vault=vault) as handle:
+            assert handle is not None
+            expected = config_dir / "vaults" / vault_path_hash(vault) / "progress.json"
+            assert expected.is_file()
+            # 平铺位置不得出现
+            assert not (config_dir / "progress.json").exists()
+            assert read_state(config_dir, vault=vault) is not None
+            # 不带 vault 读不到（不同路径）
+            assert read_state(config_dir) is None
+
+    def test_two_vaults_do_not_conflict_at_user_level(self, tmp_path):
+        config_dir = tmp_path / ".deep-obsidian"
+        vault_a = tmp_path / "vaultA"
+        vault_b = tmp_path / "vaultB"
+        with acquire(config_dir, dataset="A", total=1, vault=vault_a):
+            # vault B 的锁不受 vault A 影响
+            with acquire(config_dir, dataset="B", total=1, vault=vault_b) as handle:
+                assert handle is not None
+                state_b = read_state(config_dir, vault=vault_b)
+                assert state_b is not None
+                assert state_b["dataset"] == "B"
+
+    def test_project_level_keeps_flat_location(self, tmp_path):
+        """项目级（单 vault）仍使用 config_dir/progress.json。"""
+        with acquire(tmp_path, dataset="p", total=1) as handle:
+            assert handle is not None
+            assert (tmp_path / "progress.json").is_file()
+
+
 class TestUpdateCrashSafety:
     """Regression coverage mirroring ADR-0005's guarantee for
     hashes.json: a process kill mid-write must never leave the
@@ -116,5 +155,6 @@ class TestUpdateCrashSafety:
                 monkeypatch.setattr(os, "replace", real_replace)
 
             assert read_state(tmp_path) == original
-            leftovers = [f for f in os.listdir(tmp_path / ".deep-obsidian") if f.endswith(".tmp")]
+            # acquire() 的 config_dir 语义：progress.json 直接在 config_dir 下
+            leftovers = [f for f in os.listdir(tmp_path) if f.endswith(".tmp")]
             assert leftovers == [], f"temp file(s) not cleaned up: {leftovers}"

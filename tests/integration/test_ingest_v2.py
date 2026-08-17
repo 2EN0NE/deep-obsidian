@@ -6,10 +6,12 @@ import pytest
 class TestIngestRequiresInit:
     """ingest 在未初始化的目录上必须报错"""
 
-    def test_ingest_without_init_raises(self, tmp_path):
-        """未 init 的目录执行 ingest 应报错"""
+    def test_ingest_without_init_raises(self, tmp_path, monkeypatch):
+        """无任何配置（无项目级也无用户级基础层）时 ingest 应报错
+        （ADR-0014：用户级是必需基础层）。"""
         from deep_obsidian.ingest import ingest
 
+        monkeypatch.setenv("HOME", str(tmp_path / "nohome"))
         (tmp_path / "test.md").write_text("# Hello\n\nSome content.")
         with pytest.raises(RuntimeError, match="init"):
             import asyncio

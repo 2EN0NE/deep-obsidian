@@ -6,9 +6,9 @@
 
 ## 核心概念
 
-### Vault（知识库目录）
+### Vault（工作空间）
 
-用户的 Obsidian（或任意 Markdown）笔记根目录。包含 `.md` 文件、子目录、`.obsidian/` 配置。Vault 是适配层的输入。
+deep-obsidian **识别和管理的工作空间**——用户存放 Markdown 笔记（含 Obsidian，但不限于）的根目录。包含 `.md` 文件、子目录、`.obsidian/` 配置（若有）。Vault 是适配层的输入；deep-obsidian 本身不依赖 Obsidian 存在即可运行，故术语上以「工作空间」为准，日常使用中与 Obsidian 的「笔记根目录」概念统一。
 
 ### Dataset（槽位）
 
@@ -116,10 +116,46 @@ Cognee `cognify` 阶段由 LLM 分析文本内容生成的节点和边。包括�
 | 结构层图（wikilinks, 属性） | 适配层 | `external_metadata` 传递给 Cognee |
 | 语义层图（LLM 推理） | Cognee cognify | `.cognee/` 下 Ladybug + SQLite |
 | 向量索引 | Cognee | `.cognee/` 下 |
-| 文件指纹 + data_id | 适配层 | `.deep-obsidian/hashes.json`（扩展了 data_id 字段） |
-| Cognee 数据项 data_id | Cognee add() 返回 | `.deep-obsidian/hashes.json`（适配层缓存） |
+| 文件指纹 + data_id | 适配层 | `hashes.json`（扩展了 data_id 字段） |
+| Cognee 数据项 data_id | Cognee add() 返回 | `hashes.json`（适配层缓存） |
 
----
+**存储布局（ADR-0014）：**
+
+- Cognee 数据目录 `.cognee/` **始终在 vault 目录下**（`<vault>/.cognee/`）——删 vault 即删数据，隔离完整。
+- 项目级状态（hashes.json）：`.deep-obsidian/vault/hashes.json`（一个项目 = 一个 vault，直接存放）。
+- 用户级状态：`~/.deep-obsidian/vaults/<hash>/hashes.json`，其中 `<hash>` 是 vault 目录绝对路径的哈希；映射关系记录在 `~/.deep-obsidian/vaults/index.json`。
+- hashes.json 内的文件路径**相对 vault 目录**，不相对配置目录。
+
+## 配置层级
+
+配置来自三个层级，运行时按优先级 **深度 merge 取并集**，冲突时以最个性化的为准：
+
+```text
+--config（显式指定） > 项目级（.deep-obsidian/settings.jsonc） > 用户级（~/.deep-obsidian/settings.jsonc）
+```
+
+- **深度 merge**：嵌套键逐键合并（如 llm.provider 用项目级、llm.api_key 项目级为空则继承用户级）。
+- **非空才覆盖**：高优先级非空（非 null/""/缺失）才覆盖低优先级——项目级 api_key 留空即继承用户级 key。
+- 用户级配置是**必需基础层**（完整配置，含 name），`init` 默认兼建用户级；merge 时若用户级缺失则报错提示。
+- 配置目录（.deep-obsidian/）仅存配置与状态文件；`.cognee/` 数据始终跟 vault 走。
+
+## 安装与配置
+
+### Install（安装）
+
+把代码和环境装到「能执行 `deep-obsidian`」状态的过程，由 `install.sh` 负责。幂等——重复执行只做修复式刷新（`uv sync`），`--reset` 才删 `.venv/` 重建。不做配置引导，那是 Init 的事。
+
+### Init（初始化）
+
+在 vault 下创建项目配置并做交互式配置引导的过程，由 `deep-obsidian init` 命令负责。写 `settings.jsonc`、提示后续使用路径。与 Install 是两回事——Install 管环境，Init 管配置。
+
+### settings.jsonc（项目配置）
+
+项目唯一配置来源，存于 `.deep-obsidian/settings.jsonc`。JSONC 格式（支持注释），嵌套深度 ≤3 层，文件头带「含 API key 勿提交 git」提示。取代了过去的 `.env` 和 `settings.json`（ADR-0011）。
+
+### 配置注入（Config Injection）
+
+从 settings.jsonc 读取 LLM/Embedding 配置后，通过 `cognee.config.set_llm_config()` / `set_embedding_config()` 写入 Cognee 的过程（ADR-0012）。不依赖环境变量，用户关终端配置不丢。
 
 ## 接口
 
@@ -129,6 +165,7 @@ Cognee `cognify` 阶段由 LLM 分析文本内容生成的节点和边。包括�
 |------|------|
 | `deep-obsidian init <path>` | 初始化项目 |
 | `deep-obsidian ingest <vault>` | 全量/增量入库（手动触发） |
+| `deep-obsidian status` | 查看 ingest 运行状态（idle / running / stale） |
 | `deep-obsidian service start` | 启动文件监控后台服务 |
 | `deep-obsidian service stop` | 停止后台服务 |
 | `deep-obsidian service status` | 查看服务状态 |

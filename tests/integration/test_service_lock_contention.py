@@ -13,7 +13,7 @@ class TestInitialScanLockContention:
     ):
         from deep_obsidian.ingest._progress_state import acquire
         from deep_obsidian.service import run_service
-        from deep_obsidian.settings import init_project
+        from deep_obsidian.settings import init_project, resolve_config
 
         # A file must exist so the initial scan has real work to do —
         # ingest()'s "nothing changed" fast path never touches the lock
@@ -21,7 +21,7 @@ class TestInitialScanLockContention:
         (tmp_path / "a.md").write_text("# A")
         init_project(tmp_path, name="svc-lock-test")
 
-        async def fake_watch(vault, project_root, shutdown_event, on_file_event):
+        async def fake_watch(vault, hashes_path, shutdown_event, on_file_event):
             # No file events — service should reach here and return
             # immediately (simulating instant shutdown) without ever
             # having crashed on the initial scan's lock conflict.
@@ -29,9 +29,10 @@ class TestInitialScanLockContention:
 
         monkeypatch.setattr("deep_obsidian.service.watch", fake_watch)
 
-        with acquire(tmp_path, dataset="svc-lock-test", total=1) as handle:
+        resolved = resolve_config(vault=tmp_path, cwd=tmp_path)
+        with acquire(tmp_path / ".deep-obsidian", dataset="svc-lock-test", total=1) as handle:
             handle.update(phase="cognify", current=1, total=1, current_file="")
-            asyncio.run(run_service(tmp_path))  # must not raise
+            asyncio.run(run_service(resolved))  # must not raise
 
         captured = capsys.readouterr()
         assert "warning" in captured.err.lower()
@@ -44,13 +45,13 @@ class TestFileEventLockContention:
     ):
         from deep_obsidian.ingest._progress_state import acquire
         from deep_obsidian.service import run_service
-        from deep_obsidian.settings import init_project
+        from deep_obsidian.settings import init_project, resolve_config
 
         note = tmp_path / "a.md"
         note.write_text("# A")
         init_project(tmp_path, name="svc-event-lock-test")
 
-        async def fake_watch(vault, project_root, shutdown_event, on_file_event):
+        async def fake_watch(vault, hashes_path, shutdown_event, on_file_event):
             # Initial full scan (no lock contention) has already
             # completed by the time watch() is called. Modify the file
             # so the simulated file-change event has real work to do,
@@ -58,13 +59,16 @@ class TestFileEventLockContention:
             # swallow the conflict, not propagate it and kill the
             # watcher loop.
             note.write_text("# A modified")
-            with acquire(project_root, dataset="svc-event-lock-test", total=1) as handle:
+            with acquire(
+                tmp_path / ".deep-obsidian", dataset="svc-event-lock-test", total=1
+            ) as handle:
                 handle.update(phase="adding", current=1, total=1, current_file="a.md")
                 await on_file_event("a.md", "modified")  # must not raise
 
         monkeypatch.setattr("deep_obsidian.service.watch", fake_watch)
 
-        asyncio.run(run_service(tmp_path))  # must not raise
+        resolved = resolve_config(vault=tmp_path, cwd=tmp_path)
+        asyncio.run(run_service(resolved))  # must not raise
 
         captured = capsys.readouterr()
         assert "warning" in captured.err.lower()

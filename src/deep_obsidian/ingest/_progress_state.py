@@ -1,10 +1,19 @@
 """Cross-process ingest progress state + single-instance lock.
 
-Persists ``.deep-obsidian/progress.json`` so that other processes (the
-``status`` command, primarily) can observe an in-progress ``ingest()``
-run without a live connection to it. The same file doubles as a
-single-instance lock: only one ingest may hold it per project at a
+Persists ``progress.json`` so that other processes (the ``status``
+command, primarily) can observe an in-progress ``ingest()`` run
+without a live connection to it. The same file doubles as a
+single-instance lock: only one ingest may hold it per vault at a
 time.
+
+Placement mirrors the hashes layout (ADR-0014):
+
+- project / --config level: ``<config_dir>/progress.json`` (one
+  project = one vault, stored flat).
+- user level: ``<config_dir>/vaults/<vault_hash>/progress.json``
+  (multiple vaults share the user config; the lock must be isolated
+  per vault, otherwise two independent vaults' ingests would falsely
+  conflict on the same lock file).
 """
 
 from __future__ import annotations
@@ -13,6 +22,8 @@ import json
 import os
 import time
 from pathlib import Path
+
+from deep_obsidian.settings import vault_path_hash
 
 _FILENAME = "progress.json"
 
@@ -28,13 +39,24 @@ class IngestAlreadyRunningError(RuntimeError):
         )
 
 
-def _progress_path(project_root: Path) -> Path:
-    return Path(project_root) / ".deep-obsidian" / _FILENAME
+def _progress_path(config_dir: Path, vault: Path | None = None) -> Path:
+    """Resolve the progress/lock file location.
+
+    ``config_dir`` is the resolved .deep-obsidian/ (project or user
+    level).  ``vault`` must be passed when the config is user-level:
+    the lock is then scoped under ``<config_dir>/vaults/<hash>/`` so
+    independent vaults don't contend on the same file (ADR-0014).
+    Project-level configs are single-vault, so the file stays flat at
+    ``<config_dir>/progress.json``.
+    """
+    if vault is not None:
+        return Path(config_dir) / "vaults" / vault_path_hash(vault) / _FILENAME
+    return Path(config_dir) / _FILENAME
 
 
-def read_state(project_root: Path) -> dict | None:
+def read_state(config_dir: Path, *, vault: Path | None = None) -> dict | None:
     """Read the raw progress state, or None if no ingest is tracked."""
-    path = _progress_path(project_root)
+    path = _progress_path(config_dir, vault)
     try:
         return json.loads(path.read_text())
     except (FileNotFoundError, ValueError):
@@ -130,7 +152,12 @@ def _try_create(path: Path, state: dict) -> bool:
 
 
 def acquire(
-    project_root: Path, dataset: str, total: int, *, now: float | None = None
+    config_dir: Path,
+    dataset: str,
+    total: int,
+    *,
+    vault: Path | None = None,
+    now: float | None = None,
 ) -> ProgressHandle:
     """Exclusively acquire the progress/lock file for a new ingest run.
 
@@ -138,11 +165,14 @@ def acquire(
     holds the lock. A lock left behind by a dead process (crash,
     SIGKILL) is cleaned up and re-acquired automatically.
 
+    *vault* scopes the lock per-vault for user-level configs (ADR-0014) —
+    pass ``resolved.vault`` when ``resolved.level == "user"``.
+
     *now* is an optional timestamp override for ``started_at`` — only
     exposed for tests that need deterministic timestamps without
     monkeypatching ``time.time``.
     """
-    path = _progress_path(project_root)
+    path = _progress_path(config_dir, vault)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     initial_state = {
@@ -158,7 +188,7 @@ def acquire(
     if _try_create(path, initial_state):
         return ProgressHandle(path, initial_state)
 
-    existing = read_state(project_root)
+    existing = read_state(config_dir, vault=vault)
     if existing is not None:
         pid = existing.get("pid")
         if isinstance(pid, int) and is_process_alive(pid):
@@ -172,7 +202,7 @@ def acquire(
         pass
 
     if not _try_create(path, initial_state):
-        existing = read_state(project_root)
+        existing = read_state(config_dir, vault=vault)
         if existing is not None:
             pid = existing.get("pid")
             if isinstance(pid, int) and is_process_alive(pid):

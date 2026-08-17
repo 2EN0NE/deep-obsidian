@@ -5,11 +5,15 @@ actually needed.  This keeps ``--help`` and other fast-path CLI
 commands free of Cognee's import-time logging.
 """
 
-__all__ = ["forget", "ingest", "query", "search", "service", "status"]
+__all__ = ["config", "forget", "ingest", "query", "search", "service", "status"]
 __version__ = "0.1.0"
 
 
 def __getattr__(name: str):
+    if name == "config":
+        import deep_obsidian.config  # noqa: F401
+
+        return deep_obsidian.config
     if name == "forget":
         from deep_obsidian.forget import forget
 

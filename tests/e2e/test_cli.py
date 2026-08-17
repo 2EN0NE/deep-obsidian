@@ -40,50 +40,60 @@ class TestHelpAndVersion:
 class TestInit:
     """init command creates a valid project skeleton."""
 
+    def _settings(self, tmp_path: Path) -> dict:
+        from deep_obsidian.settings import read_settings
+
+        return read_settings(tmp_path)
+
     def test_init_creates_settings_json(self, tmp_path: Path, runner: CliRunner) -> None:
         result = runner.invoke(main, ["init", str(tmp_path)])
         assert result.exit_code == 0
-        settings = tmp_path / ".deep-obsidian" / "settings.json"
-        assert settings.is_file(), f"Expected {settings} to exist"
+        settings_file = tmp_path / ".deep-obsidian" / "settings.jsonc"
+        assert settings_file.is_file(), f"Expected {settings_file} to exist"
 
-        data = json.loads(settings.read_text())
+        data = self._settings(tmp_path)
         assert "deep-obsidian-id" in data
         assert data["name"] == tmp_path.name
-        assert "backend" in data
-        assert "logging" in data
-        assert data["logging"]["file_level"] == "INFO"
+        assert "llm" in data
+        assert "embedding" in data
+        assert "network" in data
 
     def test_init_with_name(self, tmp_path: Path, runner: CliRunner) -> None:
         result = runner.invoke(main, ["init", str(tmp_path), "--name", "my-project"])
         assert result.exit_code == 0
-        settings = tmp_path / ".deep-obsidian" / "settings.json"
-        data = json.loads(settings.read_text())
+        data = self._settings(tmp_path)
         assert data["name"] == "my-project"
 
     def test_init_idempotent(self, tmp_path: Path, runner: CliRunner) -> None:
         """Running init twice does not overwrite settings."""
         runner.invoke(main, ["init", str(tmp_path), "--name", "original"])
-        first = json.loads((tmp_path / ".deep-obsidian" / "settings.json").read_text())
+        first = self._settings(tmp_path)
 
         runner.invoke(main, ["init", str(tmp_path), "--name", "override"])
-        second = json.loads((tmp_path / ".deep-obsidian" / "settings.json").read_text())
+        second = self._settings(tmp_path)
 
         assert second["name"] == "original"  # idempotent
         assert second["deep-obsidian-id"] == first["deep-obsidian-id"]
 
 
 class TestErrorMessages:
-    """Commands on un-initialized directories give clear errors."""
+    """Commands with no config at all (no project, no user) give clear errors."""
 
-    def test_ingest_without_init(self, tmp_path: Path, runner: CliRunner) -> None:
+    def test_ingest_without_init(self, tmp_path: Path, runner: CliRunner, monkeypatch) -> None:
+        empty_home = tmp_path / "nohome"
+        empty_home.mkdir()
+        monkeypatch.setenv("HOME", str(empty_home))
         (tmp_path / "note.md").write_text("# test")
         result = runner.invoke(main, ["ingest", str(tmp_path)])
         assert result.exit_code != 0
         assert "init" in result.output.lower()
 
-    def test_search_without_init(self, tmp_path: Path, runner: CliRunner) -> None:
+    def test_search_without_init(self, tmp_path: Path, runner: CliRunner, monkeypatch) -> None:
         import os as _os
 
+        empty_home = tmp_path / "nohome"
+        empty_home.mkdir()
+        monkeypatch.setenv("HOME", str(empty_home))
         _cwd = _os.getcwd()
         try:
             _os.chdir(tmp_path)
@@ -93,9 +103,37 @@ class TestErrorMessages:
         assert result.exit_code != 0
         assert "init" in result.output.lower()
 
-    def test_forget_without_init(self, tmp_path: Path, runner: CliRunner) -> None:
+    def test_search_with_project_but_no_user_level_names_real_cause(  # noqa: E501 - test name is descriptive
+        self, tmp_path: Path, runner: CliRunner, monkeypatch
+    ) -> None:
+        """项目级 .deep-obsidian/ 存在但用户级缺失时，search 报错必须指向
+        真实原因（用户级基础层缺失），而不是误导性的"未找到 .deep-obsidian"
+        （曾让用户按提示重跑 init 也无济于事）。"""
         import os as _os
 
+        from deep_obsidian.settings import init_project
+
+        empty_home = tmp_path / "nohome"
+        empty_home.mkdir()
+        monkeypatch.setenv("HOME", str(empty_home))
+        init_project(tmp_path, name="proj-only")
+        assert (tmp_path / ".deep-obsidian" / "settings.jsonc").is_file()
+
+        _cwd = _os.getcwd()
+        try:
+            _os.chdir(tmp_path)
+            result = runner.invoke(main, ["search", "test"])
+        finally:
+            _os.chdir(_cwd)
+        assert result.exit_code != 0
+        assert "user-level" in result.output
+
+    def test_forget_without_init(self, tmp_path: Path, runner: CliRunner, monkeypatch) -> None:
+        import os as _os
+
+        empty_home = tmp_path / "nohome"
+        empty_home.mkdir()
+        monkeypatch.setenv("HOME", str(empty_home))
         _cwd = _os.getcwd()
         try:
             _os.chdir(tmp_path)
@@ -103,7 +141,7 @@ class TestErrorMessages:
         finally:
             _os.chdir(_cwd)
         assert result.exit_code != 0
-        assert "specify target" in result.output.lower()
+        assert "init" in result.output.lower()
 
     def test_forget_all_and_targets_mutex(self, tmp_path: Path, runner: CliRunner) -> None:
         """forget --all with targets is rejected."""
@@ -122,10 +160,13 @@ class TestErrorMessages:
         assert result.exit_code != 0
         assert "both targets and --all" in result.output.lower()
 
-    def test_service_status_no_init(self, tmp_path: Path, runner: CliRunner) -> None:
-        """service commands on un-initialized dirs give clear errors."""
+    def test_service_status_no_init(self, tmp_path: Path, runner: CliRunner, monkeypatch) -> None:
+        """service commands with no config at all give clear errors."""
         import os as _os
 
+        empty_home = tmp_path / "nohome"
+        empty_home.mkdir()
+        monkeypatch.setenv("HOME", str(empty_home))
         _cwd = _os.getcwd()
         try:
             _os.chdir(tmp_path)
@@ -133,7 +174,7 @@ class TestErrorMessages:
         finally:
             _os.chdir(_cwd)
         assert result.exit_code != 0
-        assert "not in a deep-obsidian project" in result.output.lower()
+        assert "init" in result.output.lower()
 
 
 class TestForgetInteractiveConfirmation:
@@ -166,7 +207,7 @@ class TestForgetInteractiveConfirmation:
 
         from deep_obsidian.ingest._fingerprint import load_hashes
 
-        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "hashes.json"))
+        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "vault" / "hashes.json"))
         assert "a.md" in hashes, "cancelling must not touch hashes.json"
 
     def test_forget_all_confirmed_on_y_clears_data(
@@ -192,7 +233,7 @@ class TestForgetInteractiveConfirmation:
 
         from deep_obsidian.ingest._fingerprint import load_hashes
 
-        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "hashes.json"))
+        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "vault" / "hashes.json"))
         assert hashes == {}
 
     def test_forget_multi_file_cancelled_on_n_leaves_data_untouched(
@@ -222,7 +263,7 @@ class TestForgetInteractiveConfirmation:
 
         from deep_obsidian.ingest._fingerprint import load_hashes
 
-        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "hashes.json"))
+        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "vault" / "hashes.json"))
         assert "notes/a.md" in hashes
         assert "notes/b.md" in hashes
 
@@ -250,7 +291,7 @@ class TestForgetInteractiveConfirmation:
 
         from deep_obsidian.ingest._fingerprint import load_hashes
 
-        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "hashes.json"))
+        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "vault" / "hashes.json"))
         assert "notes/a.md" not in hashes
         assert "notes/b.md" not in hashes
 
@@ -305,11 +346,17 @@ class TestIngestTTYProgressCard:
 
         monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
 
+        # ingest 现在需要 @click.pass_context 的 ctx——提供假的。
+        import click
+
+        ctx = click.Context(main, obj={"config_path": None})
         ingest_callback = main.commands["ingest"].callback
         assert ingest_callback is not None
         # Must not raise — exercises ProgressCard.start_scan/update/
         # start_cognify/finish end to end against a real ingest() run.
-        ingest_callback(target=str(tmp_path), full=False, json_output=False)
+        # pass_context 从 context stack 取 ctx（不能显式传，会重复）。
+        with ctx:
+            ingest_callback(target=str(tmp_path), full=False, json_output=False)
 
     def test_keyboard_interrupt_clears_card_and_exits_130(
         self, tmp_path: Path, monkeypatch
@@ -333,7 +380,10 @@ class TestIngestTTYProgressCard:
 
         ingest_callback = main.commands["ingest"].callback
         assert ingest_callback is not None
-        with pytest.raises(SystemExit) as exc_info:
+        import click
+
+        ctx = click.Context(main, obj={"config_path": None})
+        with ctx, pytest.raises(SystemExit) as exc_info:
             ingest_callback(target=str(tmp_path), full=False, json_output=False)
         assert exc_info.value.code == 130
 
@@ -387,14 +437,16 @@ class TestStatus:
         import os as _os
 
         _cwd = _os.getcwd()
+        result = None
         try:
             _os.chdir(tmp_path)
-            with acquire(tmp_path, dataset="status-running", total=5) as handle:
+            with acquire(tmp_path / ".deep-obsidian", dataset="status-running", total=5) as handle:
                 handle.update(phase="adding", current=2, total=5, current_file="b.md")
                 result = runner.invoke(main, ["status", "--json"])
         finally:
             _os.chdir(_cwd)
 
+        assert result is not None
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["status"] == "running"
@@ -412,14 +464,17 @@ class TestStatus:
         import os as _os
 
         _cwd = _os.getcwd()
+        result = None
         try:
             _os.chdir(tmp_path)
-            with acquire(tmp_path, dataset="status-running-human", total=5) as handle:
+            config_dir = tmp_path / ".deep-obsidian"
+            with acquire(config_dir, dataset="status-running-human", total=5) as handle:
                 handle.update(phase="adding", current=2, total=5, current_file="b.md")
                 result = runner.invoke(main, ["status"])
         finally:
             _os.chdir(_cwd)
 
+        assert result is not None
         assert result.exit_code == 0
         assert "adding" in result.output.lower()
         assert "2/5" in result.output
@@ -501,9 +556,12 @@ class TestStatus:
         assert result.exit_code == 0
         assert "1/4" in result.output
 
-    def test_without_init(self, tmp_path: Path, runner: CliRunner) -> None:
+    def test_without_init(self, tmp_path: Path, runner: CliRunner, monkeypatch) -> None:
         import os as _os
 
+        empty_home = tmp_path / "nohome"
+        empty_home.mkdir()
+        monkeypatch.setenv("HOME", str(empty_home))
         _cwd = _os.getcwd()
         try:
             _os.chdir(tmp_path)
@@ -530,7 +588,7 @@ class TestIngestLockContention:
         (tmp_path / "a.md").write_text("# A")
         init_project(tmp_path, name="lock-contention")
 
-        with acquire(tmp_path, dataset="lock-contention", total=1) as handle:
+        with acquire(tmp_path / ".deep-obsidian", dataset="lock-contention", total=1) as handle:
             handle.update(phase="cognify", current=1, total=1, current_file="")
             result = runner.invoke(main, ["ingest", str(tmp_path)])
 
@@ -551,7 +609,7 @@ class TestIngestLockContention:
         (tmp_path / "a.md").write_text("# A")
         init_project(tmp_path, name="lock-elapsed")
 
-        with acquire(tmp_path, dataset="lock-elapsed", total=1) as handle:
+        with acquire(tmp_path / ".deep-obsidian", dataset="lock-elapsed", total=1) as handle:
             handle.update(phase="cognify", current=1, total=1, current_file="")
             # Backdate started_at so the friendly message has a
             # non-trivial elapsed duration to report.
@@ -571,7 +629,8 @@ class TestIngestLockContention:
         (tmp_path / "a.md").write_text("# A")
         init_project(tmp_path, name="lock-contention-json")
 
-        with acquire(tmp_path, dataset="lock-contention-json", total=1) as handle:
+        config_dir = tmp_path / ".deep-obsidian"
+        with acquire(config_dir, dataset="lock-contention-json", total=1) as handle:
             handle.update(phase="adding", current=1, total=1, current_file="a.md")
             result = runner.invoke(main, ["ingest", str(tmp_path), "--json"])
 
@@ -676,3 +735,86 @@ class TestSearch:
         assert "No results found." in result.output
         # 无结果时不显示耗时汇总
         assert "搜索耗时" not in result.output
+
+
+class TestServiceUserLevelGuard:
+    """service 是长驻单 vault 进程：用户级配置（~/.deep-obsidian）下不得启动，
+    否则守护进程会把 $HOME 当作 vault 全量入库（曾真实发生的回归）。
+    """
+
+    def _user_level_home(self, tmp_path, monkeypatch):
+        """构造只有用户级配置的 HOME，并把 cwd 移到非项目目录。"""
+        from deep_obsidian.settings import init_project
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        init_project(home, name="user", level="user")
+
+        workdir = tmp_path / "elsewhere"
+        workdir.mkdir()
+        monkeypatch.chdir(workdir)
+        return home
+
+    def test_service_start_user_level_errors_cleanly(
+        self, tmp_path: Path, runner: CliRunner, monkeypatch
+    ) -> None:
+        """项目外（仅用户级配置）service start 报清晰错误，且不 spawn 守护进程。"""
+        from unittest.mock import Mock
+
+        self._user_level_home(tmp_path, monkeypatch)
+
+        called = Mock(side_effect=AssertionError("start_service 不应被调用"))
+        monkeypatch.setattr("deep_obsidian.service.start_service", called)
+
+        result = runner.invoke(main, ["service", "start"])
+        assert result.exit_code != 0
+        assert "项目目录" in result.output
+        called.assert_not_called()
+
+    def test_service_start_inside_project_still_works(
+        self, tmp_path: Path, runner: CliRunner, monkeypatch
+    ) -> None:
+        """项目目录内 service start 不被误拦截（守卫只拦用户级）。"""
+        from unittest.mock import Mock
+
+        self._user_level_home(tmp_path, monkeypatch)
+        # 在 HOME 下建项目（init 兼建用户级）
+        project = tmp_path / "proj"
+        project.mkdir()
+        runner.invoke(main, ["init", str(project)])
+        monkeypatch.chdir(project)
+
+        called = Mock(return_value=12345)
+        monkeypatch.setattr("deep_obsidian.service.start_service", called)
+
+        result = runner.invoke(main, ["service", "start"])
+        assert result.exit_code == 0, result.output
+        called.assert_called_once()
+
+    def test_service_main_rejects_user_level_config_dir(self, tmp_path, monkeypatch) -> None:
+        """python -m deep_obsidian.service ~/.deep-obsidian 直接拒绝（不 ingest $HOME）。"""
+        import os
+        import subprocess
+        import sys
+
+        home = self._user_level_home(tmp_path, monkeypatch)
+        env = dict(os.environ)
+        env.update(
+            {
+                "HOME": str(home),
+                "ENABLE_BACKEND_ACCESS_CONTROL": "false",
+                "COGNEE_SKIP_CONNECTION_TEST": "true",
+                "TELEMETRY_DISABLED": "1",
+            }
+        )
+        proc = subprocess.run(
+            [sys.executable, "-m", "deep_obsidian.service", str(home / ".deep-obsidian")],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=tmp_path,
+            timeout=120,
+        )
+        assert proc.returncode != 0
+        assert "用户级配置目录" in proc.stderr

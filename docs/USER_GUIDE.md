@@ -57,51 +57,78 @@ uv run deep-obsidian --help
 
 ## LLM 配置
 
-Cognee 需要 LLM 服务才能进行语义推理（cognify 阶段）。适配层本身不管理 LLM 配置——由 Cognee 的环境变量接管。
+Cognee 需要 LLM 服务才能进行语义推理（cognify 阶段）。LLM / Embedding / 网络配置统一存在
+项目唯一的配置文件 `.deep-obsidian/settings.jsonc`（ADR-0011），由 `deep-obsidian init`
+交互式引导写入，运行时注入 Cognee（ADR-0012）——不需要 `export` 环境变量，关终端配置不丢。
 
-### 通用格式
+### 配置方式
 
 ```bash
-export LLM_PROVIDER="openai"
-export LLM_API_KEY="sk-xxxx"
-export LLM_ENDPOINT="https://api.openai.com/v1"
-export LLM_MODEL="gpt-4o-mini"
+deep-obsidian init ~/my-obsidian-vault
 ```
 
-### DeepSeek 代理示例
+按提示选择 LLM 服务商、填模型 / API Key / Endpoint，回车继承当前值或使用默认值。
+配置写入 `.deep-obsidian/settings.jsonc`：
 
-```bash
-export LLM_PROVIDER="openai"
-export LLM_API_KEY="your-deepseek-key"
-export LLM_ENDPOINT="https://api.deepseek.com/v1"
-export LLM_MODEL="deepseek-chat"
+```jsonc
+{
+  // 此文件含 API key，勿提交 git
+  "llm": {
+    "provider": "custom",   // 可选: openai, custom, ollama
+    "model": "openai/deepseek-v4-pro",
+    "api_key": "sk-xxx",
+    "endpoint": "http://localhost:8317/v1"
+  },
+  "embedding": {
+    "provider": "fastembed",
+    "model": "BAAI/bge-small-zh-v1.5",
+    "dimensions": 512
+  },
+  "network": {
+    "hf_endpoint": "",        // HuggingFace 镜像（可选）
+    "hf_hub_offline": true
+  }
+}
 ```
 
-### 本地 Ollama
+### 常见 Provider 示例
 
-```bash
-export LLM_PROVIDER="ollama"
-export LLM_MODEL="llama3.1"
+**OpenAI 官方**：`llm.provider = openai`，填 API Key。
+
+**DeepSeek 代理**：
+
+```jsonc
+"llm": {
+  "provider": "custom",
+  "model": "deepseek-chat",
+  "api_key": "your-deepseek-key",
+  "endpoint": "https://api.deepseek.com/v1"
+}
+```
+
+**本地 Ollama**：
+
+```jsonc
+"llm": {
+  "provider": "ollama",
+  "model": "ollama/llama3.1:8b",
+  "endpoint": "http://localhost:11434"
+}
 ```
 
 ### Embedding 模型
 
-Cognee 默认用 `BAAI/bge-small-zh-v1.5`（中文友好）。首次运行会自动下载（~100MB）。
+默认 `BAAI/bge-small-zh-v1.5`（中文友好）。首次运行会自动下载（~100MB）。
+离线使用时设 `network.hf_hub_offline = true`。
 
-如需离线使用：
+### Cognee 内部环境变量
 
-```bash
-export HF_HUB_OFFLINE=1
-```
+以下变量由适配层在运行时自动设置，无需用户干预：
 
-### Cognee 必需的环境变量
+- `ENABLE_BACKEND_ACCESS_CONTROL=false`（关闭多用户权限，单机使用）
+- `COGNEE_SKIP_CONNECTION_TEST=true`（跳过连接测试，加速启动）
 
-```bash
-# 关闭多用户权限（单机使用必须）
-export ENABLE_BACKEND_ACCESS_CONTROL=false
-# 跳过连接测试（加速启动）
-export COGNEE_SKIP_CONNECTION_TEST=true
-```
+如需覆盖（例如明确开启遥测），在 shell 中 `export` 对应变量即可——环境变量优先级高于 jsonc。
 
 ---
 
@@ -151,25 +178,30 @@ deep-obsidian ingest ~/my-blog
 
 入库中途中断（Ctrl+C）不会丢失已完成的工作。重新执行相同命令即可从断点继续。
 
-进度记录在项目根目录的 `.deep-obsidian/hashes.json`，每篇笔记的哈希和 Cognee data_id 都在里面，重新 ingest 时用来判断哪些文件已经处理过。
+进度记录在项目根目录的 `.deep-obsidian/vault/hashes.json`，每篇笔记的哈希和 Cognee data_id 都在里面，重新 ingest 时用来判断哪些文件已经处理过。
 
 ### 数据存储位置
 
 ```
 my-blog/
-├── .cognee/              ← Cognee 图数据库 + 向量索引
+├── .cognee/              ← Cognee 图数据库 + 向量索引（始终跟 vault 走）
 │   └── databases/
 │       ├── cognee_graph_ladybug/
 │       └── ...
-├── .deep-obsidian/       ← 适配层文件指纹
-│   └── hashes.json
-├── .cognee-obsidian/     ← 适配层进度
-│   └── progress.json
+├── .deep-obsidian/       ← 适配层配置与状态
+│   ├── settings.jsonc    ← 唯一配置来源（含 API key，勿提交 git）
+│   ├── progress.json     ← 进行中的 ingest 进度/锁
+│   └── vault/
+│       └── hashes.json   ← 文件指纹 + data_id（ADR-0014）
 └── Books/
     └── ...
 ```
 
-删除项目根目录下的 `.cognee/`、`.deep-obsidian/` 和 `.cognee-obsidian/` 即可完全清除本地数据。
+配置来自用户级共享层时（`~/.deep-obsidian/settings.jsonc`），状态文件改存
+`~/.deep-obsidian/vaults/<vault-hash>/hashes.json`（按 vault 路径哈希隔离，
+映射记录在 `~/.deep-obsidian/vaults/index.json`）。
+
+删除项目根目录下的 `.cognee/` 和 `.deep-obsidian/` 即可完全清除本地数据。
 
 ---
 
@@ -178,7 +210,7 @@ my-blog/
 ### 基础搜索
 
 ```bash
-deep-obsidian search "养成习惯有什么方法" --dir ~/my-blog
+deep-obsidian search "养成习惯有什么方法" --vault ~/my-blog
 ```
 
 输出：
@@ -198,7 +230,7 @@ deep-obsidian search "养成习惯有什么方法" --dir ~/my-blog
 ### 按标签过滤
 
 ```bash
-deep-obsidian search "学习" --dir ~/my-blog --tag habit
+deep-obsidian search "学习" --vault ~/my-blog --tag habit
 ```
 
 只返回带 `#habit` 标签的笔记中与"学习"相关的内容。
@@ -207,10 +239,10 @@ deep-obsidian search "学习" --dir ~/my-blog --tag habit
 
 ```bash
 # 哪些笔记链接到了《原子习惯》？(入链)
-deep-obsidian search "习惯" --dir ~/my-blog --linked-from "原子习惯"
+deep-obsidian search "习惯" --vault ~/my-blog --linked-from "原子习惯"
 
 # 《原子习惯》链接到了哪些笔记？(出链)
-deep-obsidian search "" --dir ~/my-blog --linked-to "原子习惯"
+deep-obsidian search "" --vault ~/my-blog --linked-to "原子习惯"
 ```
 
 ### 调整返回数量
@@ -234,7 +266,7 @@ deep-obsidian ingest ~/my-blog
 # → 只处理变化的文件，其余跳过
 ```
 
-工作原理：适配层在 `.deep-obsidian/hashes.json` 中记录每篇笔记的 SHA-256 哈希。每次 ingest 对比哈希值，只处理变化的文件。
+工作原理：适配层在 `.deep-obsidian/vault/hashes.json` 中记录每篇笔记的 SHA-256 哈希。每次 ingest 对比哈希值，只处理变化的文件。
 
 ### 强制全量重建
 
@@ -246,9 +278,9 @@ deep-obsidian ingest ~/my-blog --full
 
 ## 多 vault 管理
 
-每个 vault 目录（跑过 `init` 的目录）都有自己独立的知识库，彼此互不可见。知识库的名字**总是**该 vault 的 `.deep-obsidian/settings.json` 里的 `name` 字段——没有单独的 dataset 参数可以覆盖，也不需要你记住任何内部名字。
+每个 vault 目录（跑过 `init` 的目录）都有自己独立的知识库，彼此互不可见。知识库的名字**总是**该 vault 的 `.deep-obsidian/settings.jsonc` 里的 `name` 字段——没有单独的 dataset 参数可以覆盖，也不需要你记住任何内部名字。
 
-要同时管理多个独立的知识库，分别 `init` + `ingest` 不同的目录即可，查询时用 `--dir` 指定要查哪个：
+要同时管理多个独立的知识库，分别 `init` + `ingest` 不同的目录即可，查询时用 `--vault` 指定要查哪个：
 
 ```bash
 # 工作笔记
@@ -259,21 +291,21 @@ deep-obsidian ingest ~/work-vault
 deep-obsidian init ~/blog-vault
 deep-obsidian ingest ~/blog-vault
 
-# 搜索只在指定 vault 内（--dir 决定去哪个知识库找）
-deep-obsidian search "KPI" --dir ~/work-vault
-deep-obsidian search "旅行" --dir ~/blog-vault
+# 搜索只在指定 vault 内（--vault 决定去哪个知识库找）
+deep-obsidian search "KPI" --vault ~/work-vault
+deep-obsidian search "旅行" --vault ~/blog-vault
 ```
 
-`--dir` 省略时，会从当前目录向上查找最近的 `.deep-obsidian/`——如果你已经 `cd` 进了某个 vault，直接省略 `--dir` 也行。
+`--vault` 省略时，会从当前目录向上查找最近的 `.deep-obsidian/`——如果你已经 `cd` 进了某个 vault，直接省略 `--vault` 也行。
 
 ### 删除某个 vault 的知识库
 
 ```bash
-# 交互确认（在该 vault 目录内，或加 --dir 指定）
-deep-obsidian forget --all --dir ~/work-vault
+# 交互确认（在该 vault 目录内，或加 --vault 指定）
+deep-obsidian forget --all --vault ~/work-vault
 
 # 跳过确认
-deep-obsidian forget --all --dir ~/work-vault --yes
+deep-obsidian forget --all --vault ~/work-vault --yes
 ```
 
 ---
@@ -285,7 +317,7 @@ deep-obsidian forget --all --dir ~/work-vault --yes
 ### 搜索
 
 ```bash
-deep-obsidian search "习惯" --dir ~/my-blog --json
+deep-obsidian search "习惯" --vault ~/my-blog --json
 ```
 
 ```json
@@ -315,7 +347,7 @@ deep-obsidian ingest ~/my-blog --json
 
 ```typescript
 const { stdout } = await exec(
-  "deep-obsidian search 'habit' --dir ~/my-blog --json"
+  "deep-obsidian search 'habit' --vault ~/my-blog --json"
 );
 const results = JSON.parse(stdout);
 // => [{ label: "《掌控习惯》", content: "...", source_file: "Books/《掌控习惯》.md", match_type: "vector" }, ...]
@@ -343,7 +375,7 @@ import { exec } from "child_process";
 export async function search(query: string, vaultDir: string) {
   return new Promise((resolve, reject) => {
     exec(
-      `deep-obsidian search "${query}" --dir "${vaultDir}" --json`,
+      `deep-obsidian search "${query}" --vault "${vaultDir}" --json`,
       (err, stdout) => {
         if (err) return reject(err);
         resolve(JSON.parse(stdout));
@@ -378,9 +410,9 @@ rm -f ~/my-blog/.cognee/databases/cognee_graph_ladybug/LOCK
 
 ### `No datasets found`
 
-原因：尚未执行 `ingest`，或 `--dir` 指向了错误/尚未 ingest 过的 vault。
+原因：尚未执行 `ingest`，或 `--vault` 指向了错误/尚未 ingest 过的 vault。
 
-解决：先对该 vault 执行 `ingest`；确认 `--dir` 指向的目录跑过 `init` 且 `.deep-obsidian/settings.json` 存在。
+解决：先对该 vault 执行 `ingest`；确认 `--vault` 指向的目录跑过 `init` 且 `.deep-obsidian/settings.jsonc` 存在。
 
 ### `fastembed is not installed`
 

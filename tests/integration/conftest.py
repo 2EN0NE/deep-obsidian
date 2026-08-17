@@ -13,6 +13,20 @@ import pytest
 # ── Vault fixtures ──
 
 
+@pytest.fixture(autouse=True)
+def _user_level_base(tmp_path: Path, monkeypatch) -> None:
+    """ADR-0014：用户级是必需基础层——所有 ingest/forget/service 入口都先
+    resolve_config()，缺失 ~/.deep-obsidian/settings.jsonc 会直接报错。
+    把 HOME 隔离到临时目录并兼建用户级配置，避免读到真实机器上的配置。
+    """
+    from deep_obsidian.settings import init_project
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    init_project(home, name="user-base", level="user")
+
+
 @pytest.fixture
 def tmp_vault(tmp_path: Path) -> Path:
     """Empty temp vault directory, already initialized."""

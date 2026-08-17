@@ -175,6 +175,18 @@ def file_hash(filepath: str) -> str:
     return hashlib.sha256(Path(filepath).read_bytes()).hexdigest()[:16]
 ```
 
+### install.sh 约定（ADR-0013）
+
+- **职责边界**：`install.sh` 只管环境检测 + 依赖安装 + 验证（能执行 `deep-obsidian`）；交互式配置引导是 `deep-obsidian init` 的事，install.sh 不做配置。
+- **幂等**：`.venv/` 已存在则走修复式刷新（每次 `uv sync`，uv 已最新时秒级），`--reset` 才删 `.venv/` 重建。
+- **不静默安装**：缺 Python/uv/git 时给出明确命令让用户确认后执行（不推荐编译 Python 等高风险操作）。
+- **可观测性**：
+  - 全程日志写 `logs/install.log`（带时间戳），终端只显示精简进度。
+  - `--check` 只跑环境检测、输出 JSON——是测试（bats/e2e）与用户排障的稳定接口，改动它必须同步改 `tests/bats/` 与 `tests/e2e/test_install_sh.py`。
+  - 脚本开头注释块写明职责、可观测性、用法；结尾打印下一步指引。
+- **bash 兼容**：macOS 自带 bash 3.2，不要用 `${var,,}` 等 bash 4+ 特性（用 `tr` 做大小写转换）。
+- **平台**：macOS first，`PLATFORM` 检测预留 Linux/Windows 扩展点。
+
 ---
 
 ## 已发现的陷阱

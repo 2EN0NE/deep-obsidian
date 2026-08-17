@@ -76,7 +76,12 @@ class TestWatcherDebounce:
             yield  # make it a generator
 
         with patch("deep_obsidian.service._watcher.awatch", new=fake_awatch):
-            await watch(tmp_path, tmp_path, shutdown, on_event)
+            await watch(
+                tmp_path,
+                tmp_path / ".deep-obsidian" / "vault" / "hashes.json",
+                shutdown,
+                on_event,
+            )
 
         # All 5 events should be debounced into at most 1 (the first)
         # The initial event causes a created/modified classification
@@ -103,7 +108,12 @@ class TestWatcherDebounce:
             yield
 
         with patch("deep_obsidian.service._watcher.awatch", new=fake_awatch):
-            await watch(tmp_path, tmp_path, shutdown, on_event)
+            await watch(
+                tmp_path,
+                tmp_path / ".deep-obsidian" / "vault" / "hashes.json",
+                shutdown,
+                on_event,
+            )
 
         assert len(events_received) == 0
 
@@ -129,7 +139,12 @@ class TestWatcherDebounce:
             yield
 
         with patch("deep_obsidian.service._watcher.awatch", new=fake_awatch):
-            await watch(tmp_path, tmp_path, shutdown, on_event)
+            await watch(
+                tmp_path,
+                tmp_path / ".deep-obsidian" / "vault" / "hashes.json",
+                shutdown,
+                on_event,
+            )
 
         assert len(events_received) == 1
         assert events_received[0][1] == "deleted"
@@ -188,7 +203,14 @@ class TestWatcherPollFallback:
             patch.object(watcher_mod, "awatch", new=fake_awatch),
             patch.object(watcher_mod.asyncio, "wait_for", new=fake_wait_for),
         ):
-            task = asyncio.create_task(watcher_mod.watch(tmp_path, tmp_path, shutdown, on_event))
+            task = asyncio.create_task(
+                watcher_mod.watch(
+                    tmp_path,
+                    tmp_path / ".deep-obsidian" / "vault" / "hashes.json",
+                    shutdown,
+                    on_event,
+                )
+            )
             # Give the poll loop's first (immediately-elapsed) pass a chance
             # to run before we ask everything to shut down.
             deadline = asyncio.get_running_loop().time() + 5

@@ -129,20 +129,26 @@ class TestToLevel:
 
 class TestLevelsFromSettings:
     def test_file_level_read_from_settings(self, tmp_path):
-        from deep_obsidian.settings import init_project
+        from deep_obsidian.settings import init_project, update_settings
 
         init_project(tmp_path, name="log-level-test")
-        settings_path = tmp_path / ".deep-obsidian" / "settings.json"
-        import json
-
-        settings = json.loads(settings_path.read_text())
-        settings["logging"] = {"file_level": "DEBUG", "console_level": "ERROR"}
-        settings_path.write_text(json.dumps(settings))
+        update_settings(tmp_path, {"logging": {"file_level": "DEBUG", "console_level": "ERROR"}})
 
         logger = setup_logging(tmp_path)
         file_handler, console_handler = logger.handlers
         assert file_handler.level == logging.DEBUG
         assert console_handler.level == logging.ERROR
+
+    def test_no_logging_key_falls_back_to_defaults(self, tmp_path):
+        """新模板无 logging 键时，读不到应回退默认级别而非报错。"""
+        from deep_obsidian.settings import init_project
+
+        init_project(tmp_path, name="log-level-test")
+
+        logger = setup_logging(tmp_path)
+        file_handler, console_handler = logger.handlers
+        assert file_handler.level == logging.INFO
+        assert console_handler.level == logging.WARNING
 
     def test_missing_settings_falls_back_to_defaults(self, tmp_path):
         """No .deep-obsidian/ at all (uninitialized project) must not

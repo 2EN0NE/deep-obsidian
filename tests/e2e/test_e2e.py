@@ -107,7 +107,7 @@ class TestFullIngestPipeline:
 
         asyncio.run(ingest(str(tmp_path)))
 
-        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "hashes.json"))
+        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "vault" / "hashes.json"))
         assert "note.md" in hashes
         assert "hash" in hashes["note.md"]
         assert "data_id" in hashes["note.md"]
@@ -139,7 +139,7 @@ class TestFullIngestPipeline:
         assert "LLM" in r["warnings"][0]
 
         # Hash persisted even though LLM degraded
-        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "hashes.json"))
+        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "vault" / "hashes.json"))
         assert "note.md" in hashes
 
         # Second run skips unchanged file despite no data_id
@@ -165,7 +165,7 @@ class TestIncrementalSkip:
         assert r1["added"] == 2
 
         # Verify hashes are populated
-        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "hashes.json"))
+        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "vault" / "hashes.json"))
         assert len(hashes) == 2
         assert "a.md" in hashes
         assert "hash" in hashes["a.md"]
@@ -208,7 +208,7 @@ class TestIncrementalSkip:
             assert "Cognify failed" in r1["warnings"][0]
 
         # Verify hashes were saved despite cognify crash
-        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "hashes.json"))
+        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "vault" / "hashes.json"))
         assert "note.md" in hashes
         assert "hash" in hashes["note.md"]
 
@@ -336,7 +336,7 @@ class TestForgetE2E:
         asyncio.run(ingest(str(tmp_path)))
 
         # Verify both files in hashes
-        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "hashes.json"))
+        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "vault" / "hashes.json"))
         assert "a.md" in hashes
         assert "b.md" in hashes
 
@@ -346,7 +346,7 @@ class TestForgetE2E:
         assert r["warnings"] == []
 
         # a.md removed from hashes, b.md stays
-        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "hashes.json"))
+        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "vault" / "hashes.json"))
         assert "a.md" not in hashes
         assert "b.md" in hashes
 
@@ -370,7 +370,7 @@ class TestForgetE2E:
         r = asyncio.run(forget(["notes"], vault_path=str(tmp_path)))
         assert r["forgotten"] == 2
 
-        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "hashes.json"))
+        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "vault" / "hashes.json"))
         assert "notes/a.md" not in hashes
         assert "notes/b.md" not in hashes
         assert "root.md" in hashes
@@ -394,7 +394,7 @@ class TestForgetE2E:
         assert r["forgotten"] == 2
         assert r["warnings"] == []
 
-        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "hashes.json"))
+        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "vault" / "hashes.json"))
         assert hashes == {}
 
     def test_forget_nonexistent_target_warns(self, tmp_path, mock_llm):
@@ -454,7 +454,7 @@ class TestForgetE2E:
         asyncio.run(ingest(str(tmp_path)))
         asyncio.run(forget(["revive.md"], vault_path=str(tmp_path)))
 
-        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "hashes.json"))
+        hashes = load_hashes(str(tmp_path / ".deep-obsidian" / "vault" / "hashes.json"))
         assert "revive.md" not in hashes
 
         # Re-ingest re-adds it

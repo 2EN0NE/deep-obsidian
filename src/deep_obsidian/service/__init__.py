@@ -18,27 +18,19 @@ from deep_obsidian.service._pidfile import (
     write_pid,
 )
 from deep_obsidian.service._watcher import watch
-from deep_obsidian.settings import read_settings
+from deep_obsidian.settings import ResolvedConfig
 
 
-def _find_vault(project_root: Path) -> Path:
-    """Derive the vault path from the project root.
-
-    The vault is assumed to be the project root itself (the common case
-    where .deep-obsidian/ lives inside the Obsidian vault).
-    """
-    return project_root
-
-
-async def run_service(project_root: Path) -> None:
+async def run_service(resolved: ResolvedConfig) -> None:
     """Run the service event loop (blocking).
 
     Sets up signal handlers for graceful shutdown, then enters the
-    main watcher loop.
+    main watcher loop.  ``resolved`` carries the vault (watch/ingest
+    target) and config_dir (pid/progress placement) separately — the
+    two can differ under the config hierarchy (ADR-0014).
     """
-    vault = _find_vault(project_root)
-    _settings = read_settings(project_root)
-    dataset_name: str = _settings["name"]
+    vault = resolved.vault
+    dataset_name: str = resolved.settings["name"]
 
     loop = asyncio.get_running_loop()
     shutdown_event = asyncio.Event()
@@ -64,7 +56,7 @@ async def run_service(project_root: Path) -> None:
             "the process will be force-killed on 'service stop' instead.",
         )
 
-    write_pid(project_root, os.getpid())
+    write_pid(resolved.config_dir, os.getpid())
     ingest_lock = asyncio.Lock()
 
     try:
@@ -89,38 +81,38 @@ async def run_service(project_root: Path) -> None:
 
         # Main watcher loop (with built-in 30s polling fallback)
         _log("info", f"Watching {vault} for changes...")
-        await watch(vault, project_root, shutdown_event, _on_file_event)
+        await watch(vault, resolved.hashes_path, shutdown_event, _on_file_event)
 
     finally:
         _log("info", "Service shutting down...")
-        remove_pid(project_root)
+        remove_pid(resolved.config_dir)
 
 
-def start_service(project_root: Path) -> int:
+def start_service(resolved: ResolvedConfig) -> int:
     """Start the service as a daemon process. Returns the PID."""
     import subprocess
 
-    pf = pidfile_path(project_root)
+    pf = pidfile_path(resolved.config_dir)
     pf.parent.mkdir(parents=True, exist_ok=True)
 
     # Check for existing (possibly stale) PID file
-    existing_pid = read_pid(project_root)
+    existing_pid = read_pid(resolved.config_dir)
     if existing_pid is not None:
         if is_process_alive(existing_pid):
             raise RuntimeError(f"Service already running (PID: {existing_pid})")
         # Stale PID — clean up
-        remove_pid(project_root)
+        remove_pid(resolved.config_dir)
 
     # Exclusive create to guard against concurrent starts
     try:
         fd = os.open(str(pf), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError:
         # Race: another process created the file between our read and open
-        pid = read_pid(project_root)
+        pid = read_pid(resolved.config_dir)
         if pid is not None and is_process_alive(pid):
             raise RuntimeError(f"Service already running (PID: {pid})")
         # Stale — remove and retry once
-        remove_pid(project_root)
+        remove_pid(resolved.config_dir)
         fd = os.open(str(pf), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
 
     # Prepare environment for the child process
@@ -130,7 +122,7 @@ def start_service(project_root: Path) -> int:
 
     try:
         child = subprocess.Popen(
-            [sys.executable, "-m", "deep_obsidian.service", str(project_root)],
+            [sys.executable, "-m", "deep_obsidian.service", str(resolved.config_dir)],
             env=child_env,
             start_new_session=True,
             stdout=subprocess.DEVNULL,
@@ -148,13 +140,13 @@ def start_service(project_root: Path) -> int:
         raise
 
 
-def stop_service(project_root: Path) -> bool:
+def stop_service(config_dir: Path) -> bool:
     """Stop a running service. Returns True if it was running."""
-    pid = read_pid(project_root)
+    pid = read_pid(config_dir)
     if pid is None:
         return False
     if not is_process_alive(pid):
-        remove_pid(project_root)
+        remove_pid(config_dir)
         return False
 
     os.kill(pid, signal.SIGTERM)
@@ -164,19 +156,19 @@ def stop_service(project_root: Path) -> bool:
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         if not is_process_alive(pid):
-            remove_pid(project_root)
+            remove_pid(config_dir)
             return True
         time.sleep(0.1)
 
     # Force kill
     os.kill(pid, signal.SIGKILL)
-    remove_pid(project_root)
+    remove_pid(config_dir)
     return True
 
 
-def service_status(project_root: Path) -> dict:
+def service_status(config_dir: Path) -> dict:
     """Return the current service status."""
-    pid = read_pid(project_root)
+    pid = read_pid(config_dir)
     if pid is None:
         return {"status": "stopped", "pid": None}
     if is_process_alive(pid):

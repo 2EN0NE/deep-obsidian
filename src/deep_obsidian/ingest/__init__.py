@@ -16,6 +16,7 @@ from pathlib import Path
 import cognee
 from cognee.tasks.ingestion.data_item import DataItem
 
+from deep_obsidian.config import inject_config
 from deep_obsidian.extractors.frontmatter import parse as parse_frontmatter
 from deep_obsidian.extractors.tags import parse as parse_tags
 from deep_obsidian.extractors.wikilinks import parse as parse_wikilinks
@@ -23,7 +24,7 @@ from deep_obsidian.ingest._fingerprint import file_hash, load_hashes, save_hashe
 from deep_obsidian.ingest._health import clear_ladybug_lock
 from deep_obsidian.ingest._progress_state import acquire as _acquire_progress
 from deep_obsidian.ingest._scanner import scan_vault
-from deep_obsidian.settings import find_project_root, read_settings
+from deep_obsidian.settings import LEVEL_USER, resolve_config
 
 
 class _LLMDegradedWarning(Exception):  # noqa: N818 -- pre-existing name, kept as-is (not touched by this change)
@@ -40,6 +41,7 @@ async def ingest(
     full: bool = False,
     on_progress: Callable[[int, int, str], None] | None = None,
     on_cognify_start: Callable[[], None] | None = None,
+    config_path: str | Path | None = None,
 ) -> dict:
     """Ingest a Markdown vault into Cognee's knowledge graph.
 
@@ -51,14 +53,11 @@ async def ingest(
     if not vault.exists():
         raise FileNotFoundError(f"Path does not exist: {vault_path}")
 
-    project_root = find_project_root(vault)
-    if project_root is None:
-        raise RuntimeError(
-            "No .deep-obsidian/ directory found. "
-            "Run 'deep-obsidian init' first in the project root."
-        )
-    _settings = read_settings(project_root)
-    dataset_name = dataset or _settings["name"]
+    # 配置层级解析（ADR-0014）：--config（显式）> 项目级（从 vault 或 cwd
+    # 向上找 .deep-obsidian/）> 用户级 ~/.deep-obsidian（必需基础层）。
+    # vault 只用于定位 .cognee 数据与 hashes 状态。
+    resolved = resolve_config(vault=vault, cwd=Path.cwd(), config_path=config_path)
+    dataset_name = dataset or resolved.settings["name"]
 
     # Determine files to ingest
     if vault.is_file():
@@ -70,7 +69,7 @@ async def ingest(
     else:
         raise NotADirectoryError(f"Not a directory: {vault_path}")
 
-    hashes_path = project_root / ".deep-obsidian" / "hashes.json"
+    hashes_path = resolved.hashes_path
 
     # Load stored hashes (v2 format with data_id).  Always load — even in
     # --full mode — so that files that were already indexed go through
@@ -97,7 +96,7 @@ async def ingest(
         }
 
     # ── classify files ──
-    current_relpaths = {str(fp.relative_to(project_root)) for fp in current_files}
+    current_relpaths = {str(fp.relative_to(resolved.vault)) for fp in current_files}
     stored_relpaths = set(stored_hashes.keys())
 
     # Files present on disk
@@ -112,7 +111,7 @@ async def ingest(
     all_warnings: list[str] = []
 
     for idx, filepath in enumerate(current_files):
-        rel = str(filepath.relative_to(project_root))
+        rel = str(filepath.relative_to(resolved.vault))
         current_hash = file_hash(str(filepath))
         stored_entry = stored_hashes.get(rel)
 
@@ -145,10 +144,11 @@ async def ingest(
     # wipe, or cloned repo — silently blocks all ingestion: the files
     # appear up-to-date by hash, but the data never reached Cognee.
     if unchanged_count > 0 and total == 0 and deleted_count == 0:
-        clear_ladybug_lock(str(project_root))
+        clear_ladybug_lock(str(resolved.vault))
         os.environ.setdefault("TELEMETRY_DISABLED", "1")
-        cognee.config.data_root_directory(str(project_root / ".cognee"))
-        cognee.config.system_root_directory(str(project_root / ".cognee"))
+        inject_config(resolved)
+        cognee.config.data_root_directory(str(resolved.vault / ".cognee"))
+        cognee.config.system_root_directory(str(resolved.vault / ".cognee"))
         try:
             ds_list = await cognee.datasets.list_datasets()
             if any(d.name == dataset_name for d in ds_list):
@@ -171,7 +171,7 @@ async def ingest(
             f"forcing full re-ingestion (hashes.json may be stale)"
         )
         new_hashes = {}
-        to_process = [(fp, str(fp.relative_to(project_root)), "add") for fp in current_files]
+        to_process = [(fp, str(fp.relative_to(resolved.vault)), "add") for fp in current_files]
         total = len(to_process)
         unchanged_count = 0
         # Fall through — Cognee is already initialized below.
@@ -210,11 +210,17 @@ async def ingest(
     # lock file. ``acquire()`` raises IngestAlreadyRunningError if
     # another live ingest already holds it for this project — callers
     # (CLI, service) are responsible for presenting that error usefully.
-    with _acquire_progress(project_root, dataset_name, total) as handle:
-        clear_ladybug_lock(str(project_root))
+    with _acquire_progress(
+        resolved.config_dir,
+        dataset_name,
+        total,
+        vault=resolved.vault if resolved.level == LEVEL_USER else None,
+    ) as handle:
+        clear_ladybug_lock(str(resolved.vault))
         os.environ.setdefault("TELEMETRY_DISABLED", "1")
-        cognee.config.data_root_directory(str(project_root / ".cognee"))
-        cognee.config.system_root_directory(str(project_root / ".cognee"))
+        inject_config(resolved)
+        cognee.config.data_root_directory(str(resolved.vault / ".cognee"))
+        cognee.config.system_root_directory(str(resolved.vault / ".cognee"))
 
         # Process deleted files (requires Cognee)
         for rel in deleted_rels:

@@ -2,10 +2,74 @@
 
 from __future__ import annotations
 
-from deep_obsidian.search import _tag_matches, _word_boundary_match
+import json
+from pathlib import Path
+
+from deep_obsidian.search import _build_source_index, _tag_matches, _word_boundary_match
 
 
-class TestWordBoundaryMatch:
+class TestBuildSourceIndex:
+    """_build_source_index resolves hashes.json → data_id/stem indexes.
+
+    ADR-0014: hashes.json lives at the RESOLVED location — project level
+    <config_dir>/vault/hashes.json, user level
+    ~/.deep-obsidian/vaults/<hash>/hashes.json. The function takes the
+    resolved path directly, so both levels must work (regression: it
+    used to hardcode config_dir/vault/hashes.json, missing user-level
+    state entirely).
+    """
+
+    def _write_hashes(self, hashes_path: Path) -> None:
+        hashes_path.parent.mkdir(parents=True, exist_ok=True)
+        hashes_path.write_text(
+            json.dumps(
+                {
+                    "notes/a.md": {"data_id": "d1"},
+                    "notes/b.md": {"data_id": "d2"},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_builds_indexes_from_hashes_path(self, tmp_path: Path) -> None:
+        hashes_path = tmp_path / ".deep-obsidian" / "vault" / "hashes.json"
+        self._write_hashes(hashes_path)
+
+        by_data_id, by_stem = _build_source_index(hashes_path)
+
+        assert by_data_id == {"d1": "notes/a.md", "d2": "notes/b.md"}
+        assert by_stem["a"] == "notes/a.md"
+        assert by_stem["b"] == "notes/b.md"
+
+    def test_user_level_hashes_path_works(self, tmp_path: Path) -> None:
+        """Regression: user-level state lives at vaults/<hash>/hashes.json
+        — the index builder must accept that resolved path (not assume
+        config_dir/vault/hashes.json).
+        """
+        hashes_path = tmp_path / "vaults" / "a1b2c3d4" / "hashes.json"
+        self._write_hashes(hashes_path)
+
+        by_data_id, _ = _build_source_index(hashes_path)
+
+        assert by_data_id == {"d1": "notes/a.md", "d2": "notes/b.md"}
+
+    def test_none_returns_empty(self) -> None:
+        assert _build_source_index(None) == ({}, {})
+
+    def test_missing_file_returns_empty(self, tmp_path: Path) -> None:
+        assert _build_source_index(tmp_path / "nope" / "hashes.json") == ({}, {})
+
+    def test_missing_data_id_skipped(self, tmp_path: Path) -> None:
+        hashes_path = tmp_path / "hashes.json"
+        hashes_path.write_text(
+            json.dumps({"notes/a.md": {}, "notes/b.md": {"data_id": "d2"}}),
+            encoding="utf-8",
+        )
+
+        by_data_id, _ = _build_source_index(hashes_path)
+
+        assert by_data_id == {"d2": "notes/b.md"}
+
     def test_exact_word_matches(self):
         assert not _word_boundary_match("habit", "habits are powerful")
         assert _word_boundary_match("habit", "the habit of reading")

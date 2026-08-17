@@ -6,12 +6,14 @@ import pytest
 class TestSearchRequiresInit:
     """search 在未初始化的目录上必须报错"""
 
-    def test_search_without_init_raises(self, tmp_path):
-        """未 init 的目录执行 search 应报错"""
+    def test_search_without_init_raises(self, tmp_path, monkeypatch):
+        """无任何配置（无项目级也无用户级基础层）时 search 应报错
+        （ADR-0014：用户级是必需基础层）。"""
         import asyncio
 
         from deep_obsidian.search import search
 
+        monkeypatch.setenv("HOME", str(tmp_path / "nohome"))
         with pytest.raises(RuntimeError, match="init"):
             asyncio.run(search("test query", vault_path=str(tmp_path)))
 

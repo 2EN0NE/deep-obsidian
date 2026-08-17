@@ -6,14 +6,14 @@ import os
 from pathlib import Path
 
 
-def pidfile_path(project_root: Path) -> Path:
+def pidfile_path(config_dir: Path) -> Path:
     """Return the path to the service PID file."""
-    return project_root / ".deep-obsidian" / "service.pid"
+    return config_dir / "service.pid"
 
 
-def read_pid(project_root: Path) -> int | None:
+def read_pid(config_dir: Path) -> int | None:
     """Read the PID from the PID file, or None."""
-    pf = pidfile_path(project_root)
+    pf = pidfile_path(config_dir)
     try:
         content = pf.read_text().strip()
         return int(content) if content.isdigit() else None
@@ -21,17 +21,17 @@ def read_pid(project_root: Path) -> int | None:
         return None
 
 
-def write_pid(project_root: Path, pid: int) -> None:
+def write_pid(config_dir: Path, pid: int) -> None:
     """Write the PID to the PID file."""
-    pf = pidfile_path(project_root)
+    pf = pidfile_path(config_dir)
     pf.parent.mkdir(parents=True, exist_ok=True)
     pf.write_text(str(pid))
 
 
-def remove_pid(project_root: Path) -> None:
+def remove_pid(config_dir: Path) -> None:
     """Remove the PID file."""
     try:
-        pidfile_path(project_root).unlink()
+        pidfile_path(config_dir).unlink()
     except FileNotFoundError:
         pass
 

@@ -30,8 +30,9 @@ class TestServiceSubprocess:
         child_env["ENABLE_BACKEND_ACCESS_CONTROL"] = "false"
         child_env["COGNEE_SKIP_CONNECTION_TEST"] = "true"
 
+        # 守护进程入参是 config_dir（<vault>/.deep-obsidian）——vault 由其 parent 反推
         child = subprocess.Popen(
-            [sys.executable, "-m", "deep_obsidian.service", str(tmp_path)],
+            [sys.executable, "-m", "deep_obsidian.service", str(tmp_path / ".deep-obsidian")],
             env=child_env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -81,27 +82,37 @@ class TestServiceLifecycleAPI:
     fallback — were never exercised by any test.
     """
 
+    def _resolved(self, tmp_path: Path):
+        """构造项目级 ResolvedConfig（ADR-0014 后 start_service 收它而非 Path）。"""
+        from deep_obsidian.settings import resolve_config
+
+        return resolve_config(vault=tmp_path, cwd=tmp_path)
+
+    def _config_dir(self, tmp_path: Path) -> Path:
+        """stop/status 的入参是 config_dir（<vault>/.deep-obsidian）。"""
+        return tmp_path / ".deep-obsidian"
+
     def test_start_stop_roundtrip(self, tmp_path: Path) -> None:
         from deep_obsidian.service import service_status, start_service, stop_service
         from deep_obsidian.settings import init_project
 
         init_project(tmp_path, name="svc-api-test")
 
-        pid = start_service(tmp_path)
+        pid = start_service(self._resolved(tmp_path))
         try:
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
-                if service_status(tmp_path)["status"] == "running":
+                if service_status(self._config_dir(tmp_path))["status"] == "running":
                     break
                 time.sleep(0.2)
-            assert service_status(tmp_path) == {"status": "running", "pid": pid}
+            assert service_status(self._config_dir(tmp_path)) == {"status": "running", "pid": pid}
 
-            stopped = stop_service(tmp_path)
+            stopped = stop_service(self._config_dir(tmp_path))
             assert stopped
-            assert service_status(tmp_path)["status"] == "stopped"
+            assert service_status(self._config_dir(tmp_path))["status"] == "stopped"
         finally:
             # Best-effort cleanup if the assertions above failed midway.
-            st = service_status(tmp_path)
+            st = service_status(self._config_dir(tmp_path))
             if st["status"] in ("running", "stale_pid") and st["pid"]:
                 try:
                     os.kill(st["pid"], signal.SIGKILL)
@@ -117,12 +128,12 @@ class TestServiceLifecycleAPI:
 
         init_project(tmp_path, name="svc-race-test")
 
-        start_service(tmp_path)
+        start_service(self._resolved(tmp_path))
         try:
             with pytest.raises(RuntimeError, match="already running"):
-                start_service(tmp_path)
+                start_service(self._resolved(tmp_path))
         finally:
-            stop_service(tmp_path)
+            stop_service(self._config_dir(tmp_path))
 
     def test_start_after_stale_pid_cleans_up_and_restarts(self, tmp_path: Path) -> None:
         """start_service() must recover from a stale PID file left behind
@@ -144,19 +155,19 @@ class TestServiceLifecycleAPI:
         # exits immediately and wait for it, then reuse its now-reaped PID.
         dead = subprocess.Popen([sys.executable, "-c", "pass"])
         dead.wait(timeout=5)
-        write_pid(tmp_path, dead.pid)
+        write_pid(self._config_dir(tmp_path), dead.pid)
 
-        pid = start_service(tmp_path)
+        pid = start_service(self._resolved(tmp_path))
         try:
             # A fresh PID file was written by the newly-started daemon —
             # not left pointing at the stale, dead PID.
-            assert pidfile_path(tmp_path).read_text().strip() == str(pid)
+            assert pidfile_path(self._config_dir(tmp_path)).read_text().strip() == str(pid)
 
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
-                if service_status(tmp_path)["status"] == "running":
+                if service_status(self._config_dir(tmp_path))["status"] == "running":
                     break
                 time.sleep(0.2)
-            assert service_status(tmp_path) == {"status": "running", "pid": pid}
+            assert service_status(self._config_dir(tmp_path)) == {"status": "running", "pid": pid}
         finally:
-            stop_service(tmp_path)
+            stop_service(self._config_dir(tmp_path))

@@ -130,8 +130,13 @@ class TestForgetAllScope:
         from deep_obsidian.ingest._fingerprint import save_hashes
         from deep_obsidian.settings import init_project
 
+        # 用户级基础层（ADR-0014 必需）+ 项目级
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        init_project(home, name="user", level="user")
         init_project(tmp_path, name="scope-test")
-        hashes_path = tmp_path / ".deep-obsidian" / "hashes.json"
+        hashes_path = tmp_path / ".deep-obsidian" / "vault" / "hashes.json"
         save_hashes(str(hashes_path), {"a.md": {"hash": "h1", "data_id": "id-1"}})
 
         calls: list[dict] = []

@@ -23,6 +23,7 @@ dependencies = [
   "pyyaml>=6.0",
   "fastembed>=0.8",
   "watchfiles>=1.0",
+  "json5>=0.15",
 ]
 
 [dependency-groups]
@@ -51,6 +52,7 @@ addopts = "-v --tb=short --reruns 1 --only-rerun 'AssertionError|TimeoutError|OS
 markers = [
   "unit: unit tests (fast, no Cognee)",
   "integration: integration tests (needs Cognee + LLM)",
+  "e2e: end-to-end tests (full CLI flows)",
 ]
 
 [tool.pyright]

@@ -28,7 +28,7 @@ class TestForgetLockContention:
 
         import pytest
 
-        with acquire(tmp_path, dataset="forget-lock-test", total=1) as handle:
+        with acquire(tmp_path / ".deep-obsidian", dataset="forget-lock-test", total=1) as handle:
             handle.update(phase="cognify", current=1, total=1, current_file="")
             with pytest.raises(RuntimeError, match="Cannot forget while an ingest is running"):
                 asyncio.run(forget(["a.md"], vault_path=str(tmp_path)))

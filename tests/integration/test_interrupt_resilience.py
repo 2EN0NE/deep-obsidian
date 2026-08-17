@@ -54,7 +54,7 @@ class TestInterruptMidLoopPreservesProgress:
 
         # The first 2 files completed cognee.add() before the interrupt —
         # their hash/data_id must already be on disk.
-        hashes_path = tmp_path / ".deep-obsidian" / "hashes.json"
+        hashes_path = tmp_path / ".deep-obsidian" / "vault" / "hashes.json"
         stored = load_hashes(str(hashes_path))
         assert len(stored) == 2, (
             f"Expected the 2 files processed before interrupt to be persisted, "
@@ -116,7 +116,7 @@ class TestStaleHashesDetection:
                 "hash": file_hash(str(fp)),
                 "data_id": "11111111-1111-1111-1111-111111111111",
             }
-        hashes_path = tmp_path / ".deep-obsidian" / "hashes.json"
+        hashes_path = tmp_path / ".deep-obsidian" / "vault" / "hashes.json"
         save_hashes(str(hashes_path), stale_hashes)
 
         # Simulate: dataset "test-vault" doesn't exist in Cognee

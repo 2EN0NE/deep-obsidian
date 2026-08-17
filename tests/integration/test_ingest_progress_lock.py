@@ -29,7 +29,7 @@ class TestProgressWiring:
         seen: list[dict | None] = []
 
         def on_progress(current: int, total: int, desc: str) -> None:
-            seen.append(read_state(tmp_path))
+            seen.append(read_state(tmp_path / ".deep-obsidian"))
 
         asyncio.run(ingest(str(tmp_path), on_progress=on_progress))
 
@@ -58,7 +58,7 @@ class TestProgressWiring:
 
         def on_cognify_start() -> None:
             nonlocal seen
-            seen = read_state(tmp_path)
+            seen = read_state(tmp_path / ".deep-obsidian")
 
         asyncio.run(ingest(str(tmp_path), on_cognify_start=on_cognify_start))
 
@@ -76,7 +76,7 @@ class TestProgressWiring:
 
         asyncio.run(ingest(str(tmp_path)))
 
-        assert read_state(tmp_path) is None
+        assert read_state(tmp_path / ".deep-obsidian") is None
 
     def test_no_lock_taken_when_nothing_to_do(self, tmp_path, mock_llm):
         """The all-unchanged fast path must not touch the lock file at all."""
@@ -88,12 +88,12 @@ class TestProgressWiring:
         init_project(tmp_path, name="no-op-test")
 
         asyncio.run(ingest(str(tmp_path)))  # first run: adds the file
-        assert read_state(tmp_path) is None
+        assert read_state(tmp_path / ".deep-obsidian") is None
 
         seen: list[dict | None] = []
 
         def on_progress(current: int, total: int, desc: str) -> None:
-            seen.append(read_state(tmp_path))
+            seen.append(read_state(tmp_path / ".deep-obsidian"))
 
         result = asyncio.run(ingest(str(tmp_path), on_progress=on_progress))
 
@@ -102,7 +102,7 @@ class TestProgressWiring:
         # file classification), but no lock is ever acquired for this
         # all-unchanged fast path, so read_state() is None throughout.
         assert seen == [None]
-        assert read_state(tmp_path) is None
+        assert read_state(tmp_path / ".deep-obsidian") is None
 
 
 class TestGracefulInterruptStillReleasesLock:
@@ -133,7 +133,7 @@ class TestGracefulInterruptStillReleasesLock:
         with pytest.raises(self._SimulatedInterrupt):
             asyncio.run(ingest(str(tmp_path), on_progress=on_progress))
 
-        assert read_state(tmp_path) is None, (
+        assert read_state(tmp_path / ".deep-obsidian") is None, (
             "a graceful (catchable) interrupt must still release the lock via "
             "ProgressHandle.__exit__, not leave an orphaned progress.json behind"
         )
@@ -153,6 +153,6 @@ class TestConcurrentIngestRaises:
         (tmp_path / "note.md").write_text("# Note\n\nSome content.")
         init_project(tmp_path, name="concurrent-test")
 
-        with acquire(tmp_path, dataset="someone-elses-run", total=1):
+        with acquire(tmp_path / ".deep-obsidian", dataset="someone-elses-run", total=1):
             with pytest.raises(IngestAlreadyRunningError):
                 asyncio.run(ingest(str(tmp_path)))

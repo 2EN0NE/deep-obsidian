@@ -23,7 +23,7 @@ _FILE_CHANGE_TYPES = {Change.added, Change.modified, Change.deleted}
 
 async def watch(
     vault: Path,
-    project_root: Path,
+    hashes_path: Path,
     shutdown_event: asyncio.Event,
     on_event: Callable[[str, str], Awaitable[None]],
 ) -> None:
@@ -34,8 +34,10 @@ async def watch(
 
     *on_event* is called with ``(relpath: str, event_type: str)`` where
     event_type is one of ``"created"``, ``"modified"``, ``"deleted"``.
+
+    ``hashes_path`` is the resolved hashes.json location (ADR-0014) —
+    project or user level.
     """
-    hashes_path = project_root / ".deep-obsidian" / "hashes.json"
     vault_str = str(vault)
 
     # Track last-processed time per file for debounce

@@ -20,10 +20,11 @@ from pathlib import Path
 
 import cognee
 
+from deep_obsidian.config import inject_config
 from deep_obsidian.ingest._fingerprint import load_hashes, save_hashes
 from deep_obsidian.ingest._health import clear_ladybug_lock
 from deep_obsidian.ingest._progress_state import is_process_alive, read_state
-from deep_obsidian.settings import find_project_root, read_settings
+from deep_obsidian.settings import LEVEL_USER, resolve_config
 
 
 async def forget(
@@ -32,6 +33,7 @@ async def forget(
     all: bool = False,
     dataset: str | None = None,
     vault_path: str | Path | None = None,
+    config_path: str | Path | None = None,
 ) -> dict:
     """Delete data from the knowledge graph.
 
@@ -56,22 +58,22 @@ async def forget(
         )
 
     lookup = Path(vault_path) if vault_path else Path.cwd()
-    project_root = find_project_root(lookup)
-    if project_root is None:
-        raise RuntimeError(
-            "No .deep-obsidian/ directory found. "
-            "Run 'deep-obsidian init' first in the project root."
-        )
-    _settings = read_settings(project_root)
-    dataset_name = dataset or _settings["name"]
-    hashes_path = str(project_root / ".deep-obsidian" / "hashes.json")
+    # 配置层级解析（ADR-0014）：--config（显式）> 项目级（从 vault 或 cwd
+    # 向上找 .deep-obsidian/）> 用户级 ~/.deep-obsidian（必需基础层）。
+    # vault 定位数据与相对路径基准。
+    resolved = resolve_config(vault=lookup, cwd=Path.cwd(), config_path=config_path)
+    dataset_name = dataset or resolved.settings["name"]
+    hashes_path = str(resolved.hashes_path)
 
     # Guard: refuse to operate while an ingest is in progress — both
     # forget and ingest write to the same Cognee graph database and
     # the same hashes.json; running them concurrently would race on
     # both.  (search/query are read-only — they get a retry loop
     # instead — but forget is a mutating operation.)
-    state = read_state(project_root)
+    state = read_state(
+        resolved.config_dir,
+        vault=resolved.vault if resolved.level == LEVEL_USER else None,
+    )
     if state is not None:
         pid = state.get("pid")
         if isinstance(pid, int) and is_process_alive(pid):
@@ -90,10 +92,11 @@ async def forget(
     # latter actually relocates the graph/vector/relational databases
     # that forget() operates on, so leaving it unset means every vault
     # on this machine shares (and can delete from) the same database.
-    clear_ladybug_lock(str(project_root))
+    clear_ladybug_lock(str(resolved.vault))
     os.environ.setdefault("TELEMETRY_DISABLED", "1")
-    cognee.config.data_root_directory(str(project_root / ".cognee"))
-    cognee.config.system_root_directory(str(project_root / ".cognee"))
+    inject_config(resolved)
+    cognee.config.data_root_directory(str(resolved.vault / ".cognee"))
+    cognee.config.system_root_directory(str(resolved.vault / ".cognee"))
 
     if all:
         return await _forget_all(dataset_name, hashes_path)
@@ -101,7 +104,7 @@ async def forget(
     return await _forget_targets(
         targets,  # type: ignore[arg-type]  # guarded above
         dataset_name=dataset_name,
-        project_root=project_root,
+        vault=resolved.vault,
         hashes_path=hashes_path,
     )
 
@@ -135,7 +138,7 @@ async def _forget_targets(
     targets: list[str],
     *,
     dataset_name: str,
-    project_root: Path,
+    vault: Path,
     hashes_path: str,
 ) -> dict:
     """Forget specific files matched by *targets*."""
@@ -154,7 +157,7 @@ async def _forget_targets(
     warnings: list[str] = []
 
     for target in targets:
-        matched, reason = _match_target(target, indexed, project_root)
+        matched, reason = _match_target(target, indexed, vault)
 
         if not matched:
             warnings.append(f"'{target}' not found in indexed files — skipped.")
@@ -196,7 +199,7 @@ async def _forget_targets(
 def _match_target(
     target: str,
     indexed: Mapping[str, str | None],
-    project_root: Path,
+    vault: Path,
 ) -> tuple[list[str], str]:
     """Match a single target against indexed paths.
 
@@ -208,9 +211,9 @@ def _match_target(
     p = Path(target)
     if p.is_absolute():
         try:
-            target = str(p.relative_to(project_root))
+            target = str(p.relative_to(vault))
         except ValueError:
-            return [], "none"  # not under project root
+            return [], "none"  # not under vault
 
     # 2. Exact match
     if target in indexed:

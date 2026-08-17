@@ -6,11 +6,14 @@ import pytest
 class TestQueryRequiresInit:
     """query 在未初始化的目录上必须报错"""
 
-    def test_query_without_init_raises(self, tmp_path):
+    def test_query_without_init_raises(self, tmp_path, monkeypatch):
+        """无任何配置（无项目级也无用户级基础层）时 query 应报错
+        （ADR-0014：用户级是必需基础层）。"""
         import asyncio
 
         from deep_obsidian.query import query
 
+        monkeypatch.setenv("HOME", str(tmp_path / "nohome"))
         with pytest.raises(RuntimeError, match="init"):
             asyncio.run(query("what is a habit?", vault_path=str(tmp_path)))
 
@@ -63,7 +66,7 @@ class TestQueryLLMRouting:
     python-dotenv as a side effect, which can pre-populate
     LLM_MODEL/LLM_PROVIDER/LLM_ENDPOINT/LLM_API_KEY in os.environ from a
     developer's real local config. Every test below explicitly clears
-    all four before asserting on settings.json-derived values, so
+    all four before asserting on settings.jsonc-derived values, so
     results don't depend on whichever machine/dev .env runs the suite.
     """
 
@@ -83,15 +86,11 @@ class TestQueryLLMRouting:
         )()
         return AsyncMock(return_value=fake_response)
 
-    def _write_cognee_settings(self, tmp_path, **cognee_cfg) -> None:
-        import json as _json
+    def _write_llm_settings(self, tmp_path, **llm_cfg) -> None:
+        """写 settings.jsonc 顶层 llm.*（ADR-0011 单一来源）。"""
+        from deep_obsidian.settings import update_settings
 
-        from deep_obsidian.settings import read_settings
-
-        settings_path = tmp_path / ".deep-obsidian" / "settings.json"
-        settings = read_settings(tmp_path)
-        settings["backend"]["cognee"] = cognee_cfg
-        settings_path.write_text(_json.dumps(settings))
+        update_settings(tmp_path, {"llm": llm_cfg})
 
     def test_custom_provider_omits_custom_llm_provider_kwarg(self, tmp_path, monkeypatch):
         """llm_provider=custom must NOT be forwarded as custom_llm_provider."""
@@ -103,11 +102,11 @@ class TestQueryLLMRouting:
 
         self._clear_env(monkeypatch)
         init_project(tmp_path, name="routing-vault")
-        self._write_cognee_settings(
+        self._write_llm_settings(
             tmp_path,
-            llm_model="openai/gpt-4o-mini",
-            llm_provider="custom",
-            llm_endpoint="https://custom.example.com/v1",
+            model="openai/gpt-4o-mini",
+            provider="custom",
+            endpoint="https://custom.example.com/v1",
         )
 
         fake_acompletion = self._fake_acompletion()
@@ -135,7 +134,7 @@ class TestQueryLLMRouting:
 
         self._clear_env(monkeypatch)
         init_project(tmp_path, name="routing-vault-2")
-        self._write_cognee_settings(tmp_path, llm_model="gpt-4o", llm_provider="openai")
+        self._write_llm_settings(tmp_path, model="gpt-4o", provider="openai")
 
         fake_acompletion = self._fake_acompletion()
         with (
@@ -150,8 +149,9 @@ class TestQueryLLMRouting:
         kwargs = fake_acompletion.call_args.kwargs
         assert kwargs["custom_llm_provider"] == "openai"
 
-    def test_env_vars_override_settings_json_for_real_query_call(self, tmp_path, monkeypatch):
-        """LLM_MODEL/LLM_API_KEY env vars must win over settings.json."""
+    def test_settings_jsonc_wins_over_env_vars(self, tmp_path, monkeypatch):
+        """ADR-0012：settings.jsonc 是 LLM 配置唯一来源，环境变量不再覆盖
+        （过去 LLM_MODEL/LLM_API_KEY 会优先于配置文件，本变更已移除该行为）。"""
         import asyncio
         from unittest.mock import AsyncMock, patch
 
@@ -160,7 +160,7 @@ class TestQueryLLMRouting:
 
         self._clear_env(monkeypatch)
         init_project(tmp_path, name="routing-vault-3")
-        self._write_cognee_settings(tmp_path, llm_model="settings-model", llm_api_key="sk-settings")
+        self._write_llm_settings(tmp_path, model="settings-model", api_key="sk-settings")
 
         monkeypatch.setenv("LLM_MODEL", "env-model")
         monkeypatch.setenv("LLM_API_KEY", "sk-env")
@@ -176,8 +176,8 @@ class TestQueryLLMRouting:
             asyncio.run(query("q", vault_path=str(tmp_path)))
 
         kwargs = fake_acompletion.call_args.kwargs
-        assert kwargs["model"] == "env-model"
-        assert kwargs["api_key"] == "sk-env"
+        assert kwargs["model"] == "settings-model"
+        assert kwargs["api_key"] == "sk-settings"
 
 
 class TestQueryLockContention:
@@ -212,6 +212,7 @@ class TestQueryLockContention:
             date_from=None,
             date_to=None,
             source=None,
+            config_path=None,
         ):
             raise SearchLockContentionError(
                 "Search failed after retries: the knowledge graph "
@@ -254,6 +255,7 @@ class TestQueryLockContention:
             date_from=None,
             date_to=None,
             source=None,
+            config_path=None,
         ):
             raise RuntimeError("Unrelated config error: bad API endpoint")
 

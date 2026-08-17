@@ -5,10 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from deep_obsidian.ingest._progress_state import is_process_alive, read_state
-from deep_obsidian.settings import find_project_root
+from deep_obsidian.settings import LEVEL_USER, resolve_config
 
 
-async def status(dataset: str | None = None, *, vault_path: str | Path | None = None) -> dict:
+async def status(
+    dataset: str | None = None,
+    *,
+    vault_path: str | Path | None = None,
+    config_path: str | Path | None = None,
+) -> dict:
     """Report whether an ingest is currently running for this project.
 
     Returns a dict with a ``status`` key of one of:
@@ -22,11 +27,14 @@ async def status(dataset: str | None = None, *, vault_path: str | Path | None = 
       ``running``, reflecting the last successfully persisted progress.
     """
     lookup = Path(vault_path) if vault_path else Path.cwd()
-    project_root = find_project_root(lookup)
-    if project_root is None:
-        raise RuntimeError("No .deep-obsidian/ directory found. Run 'deep-obsidian init' first.")
+    # 配置层级解析（ADR-0014）：progress 状态文件在 config_dir 下。
+    # config_path（--config）显式指定时直接使用。
+    resolved = resolve_config(vault=lookup, cwd=Path.cwd(), config_path=config_path)
 
-    state = read_state(project_root)
+    state = read_state(
+        resolved.config_dir,
+        vault=resolved.vault if resolved.level == LEVEL_USER else None,
+    )
     if state is None:
         return {"status": "idle", "dataset": dataset}
 
